@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+*.pyo
+*.pyd
+*.pkl
+*.log
+*.log.*git
+*.sqlite3
+.Python
+env/
+all_code.txt
+collect_code.py
+venv/
+ENV/
+docs/
+data/
+**/doc/
+.build/
+dist/
+.eggs/
+pip-wheel-metadata/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# VSCode / PyCharm
+.vscode/
+.idea/
+
+# Django
+*.db
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+local_settings.py
+.env
+certs/
+.env.*
+.trae
+# AI模型文件
+*.pt
+*.pth
+*.ckpt
+
+# 上传/导出的用户文件
+uploads/
+exports/
+
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Redis dumps
+dump.rdb
+
+# Docker
+*.pid
+*.pid.lock
+docker-compose.override.yml
+.dockerignore
+
+# System
+.DS_Store
+Thumbs.db
+.todo
+
+# Log & Backup
+*.bak
+*.swp
+*.swo
+*.orig
+*.tmp
+*.log
+*.log.*
+.daphne_pids_development/
+.daphne_pids_production/
+# MinIO/Milvus 等大文件路径（根据你项目需要定制）
+minio/
+milvus/
+
+# Node/Tailwind
+node_modules/
+package-lock.json
+*.map
+.venv
