@@ -1,0 +1,5 @@
+pandas
+openpyxl        # pandas 读取 xlsx 需要它
+sqlalchemy
+pymysql         # MySQL 的驱动
+python-dotenv   # 读取 .env
