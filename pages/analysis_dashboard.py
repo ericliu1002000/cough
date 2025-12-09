@@ -219,6 +219,34 @@ def main() -> None:
             st.info(f"📝 **备注**: {selected_row['description']}")
 
     # ===========================
+    # 1.1 根据当前选择的 setup 预加载二段配置（规则 + note）
+    #     这样即使尚未点击「加载源数据」，备注也能回显。
+    # ===========================
+    if "current_setup_name" not in st.session_state:
+        st.session_state["current_setup_name"] = selected_row["setup_name"]
+        need_reload_calc = True
+    else:
+        need_reload_calc = st.session_state["current_setup_name"] != selected_row["setup_name"]
+
+    if need_reload_calc:
+        st.session_state["current_setup_name"] = selected_row["setup_name"]
+        cfg_for_note = fetch_setup_config(selected_row["setup_name"])
+        if cfg_for_note:
+            calculation_cfg = cfg_for_note.get("calculation") or {}
+            if isinstance(calculation_cfg, dict):
+                st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
+                st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
+            else:
+                # 兼容历史：仅规则列表
+                st.session_state["calc_rules"] = calculation_cfg or []
+                st.session_state["calc_note"] = ""
+
+        # 切换配置时，清空与数据结果相关的状态，避免串数据
+        st.session_state.pop("raw_df", None)
+        st.session_state.pop("current_sql", None)
+        st.session_state.pop("selected_subject_id", None)
+
+    # ===========================
     # 2. 主区域：加载数据
     # ===========================
     # 只有点击按钮时才去数据库查询，避免每次刷新都查
@@ -227,19 +255,27 @@ def main() -> None:
         cfg_all = fetch_setup_config(selected_row["setup_name"])
         if cfg_all:
             extraction_cfg = cfg_all.get("extraction") or {}
-            calculation_cfg = cfg_all.get("calculation") or []
+            calculation_cfg = cfg_all.get("calculation") or {}
 
             sql, df_result = run_analysis(extraction_cfg)
             if not df_result.empty:
                 # 将原始数据存入 Session State
                 st.session_state["raw_df"] = df_result
                 st.session_state["current_sql"] = sql
-                # 恢复二段配置（计算规则）
-                st.session_state["calc_rules"] = calculation_cfg or []
-                
-                # 初始化计算规则列表（如果还没有的话）
+                # 恢复二段配置（计算规则 + 备注）
+                if isinstance(calculation_cfg, dict):
+                    st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
+                    st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
+                else:
+                    # 兼容历史结构：直接存的是规则列表
+                    st.session_state["calc_rules"] = calculation_cfg or []
+                    st.session_state["calc_note"] = ""
+
+                # 初始化 Session State（防止后续 Widget 报 key 不存在）
                 if "calc_rules" not in st.session_state:
-                    st.session_state["calc_rules"] = [] 
+                    st.session_state["calc_rules"] = []
+                if "calc_note" not in st.session_state:
+                    st.session_state["calc_note"] = ""
                 
                 st.success(f"数据加载成功！共 {len(df_result)} 行。")
             else:
@@ -261,9 +297,11 @@ def main() -> None:
         st.subheader("🧮 衍生变量计算 (二段配置)")
         st.caption("在此处定义计算规则，例如：量表总分 = Q1 + Q2 + ...")
         
-        # 确保规则列表存在
+        # 确保规则列表和备注字段存在
         if "calc_rules" not in st.session_state:
             st.session_state["calc_rules"] = []
+        if "calc_note" not in st.session_state:
+            st.session_state["calc_note"] = ""
 
         # [A] 添加新规则的表单
         with st.expander("➕ 添加新计算规则", expanded=True):
@@ -313,12 +351,26 @@ def main() -> None:
                         st.session_state["calc_rules"].pop(i)
                         st.rerun()
 
-        # [D] 保存计算规则到数据库（仅二段配置）
+        # [C-1] 备注信息（Note）
+        st.markdown("##### 备注 (Note)")
+        st.caption("用于记录本次二段配置的背景、假设或剔除逻辑，便于审计与追溯。")
+        # 仅使用 key 绑定 Session State，默认值来自 st.session_state['calc_note']
+        st.text_area(
+            "分析备注",
+            key="calc_note",
+            placeholder="例如：本次分析排除了基线访视；仅保留暴露期数据。",
+            height=100,
+        )
+
+        # [D] 保存计算配置到数据库（规则 + 备注）
         if st.button("💾 保存计算规则"):
             from utils import save_calculation_config
-
-            save_calculation_config(selected_row["setup_name"], st.session_state["calc_rules"])
-            st.success("二段计算规则已保存。")
+            calculation_payload = {
+                "calc_rules": st.session_state["calc_rules"],
+                "note": st.session_state.get("calc_note", ""),
+            }
+            save_calculation_config(selected_row["setup_name"], calculation_payload)
+            st.success("二段计算规则和备注已保存。")
 
         # [C] 实时执行计算流水线
         # 这一步非常快，因为是在内存中操作 Pandas

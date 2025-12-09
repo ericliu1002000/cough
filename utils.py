@@ -136,7 +136,24 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
             return value
 
         extraction = _normalize_json(row["config_extraction"])
-        calculation = _normalize_json(row["config_calculation"])
+        raw_calculation = _normalize_json(row["config_calculation"])
+
+        # 统一二段配置的 JSON 结构，保证至少包含：
+        # - calc_rules: List[Dict]
+        # - note: str
+        # 同时兼容历史数据（仅存 List 或 None）。
+        if raw_calculation is None:
+            calculation: Dict[str, Any] = {"calc_rules": [], "note": ""}
+        elif isinstance(raw_calculation, list):
+            # 早期版本只保存了规则列表
+            calculation = {"calc_rules": raw_calculation, "note": ""}
+        elif isinstance(raw_calculation, dict):
+            # 复制一份，补齐默认键，保留未来可能增加的字段（如 pivot、exclusions）
+            calculation = dict(raw_calculation)
+            calculation.setdefault("calc_rules", [])
+            calculation.setdefault("note", "")
+        else:
+            calculation = {"calc_rules": [], "note": ""}
 
         return {"extraction": extraction, "calculation": calculation}
     except Exception as e:
@@ -188,13 +205,19 @@ def save_extraction_config(
         engine.dispose()
 
 
-def save_calculation_config(setup_name: str, rules_data: Any) -> None:
+def save_calculation_config(setup_name: str, calculation_data: Any) -> None:
     """
     保存或更新「二段配置」到 analysis_list_setups.config_calculation。
 
     仅更新 config_calculation 字段，不修改一段配置。
+    calculation_data 建议为 dict，例如：
+        {
+          "calc_rules": [...],
+          "note": "本次分析备注",
+          ...  # 未来可扩展 pivot / exclusions 等
+        }
     """
-    config_json = json.dumps(rules_data, ensure_ascii=False)
+    config_json = json.dumps(calculation_data, ensure_ascii=False)
     engine = get_engine()
     sql = text(
         """
