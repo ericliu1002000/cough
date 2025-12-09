@@ -232,62 +232,65 @@ def main() -> None:
 
         # --- 结果展示区 ---
         st.divider()
-        tab1, tab2 = st.tabs(["📄 数据预览", "📊 透视分析"])
-        
-        # Tab 1: 明细数据
-        with tab1:
-            st.write(f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**")
-            st.dataframe(final_df, use_container_width=True)
-            
-            csv = final_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 下载最终数据 (CSV)",
-                data=csv,
-                file_name="analysis_final.csv",
-                mime="text/csv",
+
+        # 先展示数据预览
+        st.subheader("📄 数据预览")
+        st.write(
+            f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
+        )
+        st.dataframe(final_df, use_container_width=True)
+
+        csv = final_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            label="📥 下载最终数据 (CSV)",
+            data=csv,
+            file_name="analysis_final.csv",
+            mime="text/csv",
+        )
+
+        # 紧接着展示透视分析区域
+        st.divider()
+        st.subheader("📊 透视分析")
+
+        # 使用包含新变量的 final_df 进行透视
+        all_columns = list(final_df.columns)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            idx = st.multiselect("行维度 (Index)", options=all_columns)
+        with c2:
+            col = st.multiselect("列维度 (Columns)", options=all_columns)
+        with c3:
+            val = st.multiselect("值字段 (Values)", options=all_columns)
+        with c4:
+            agg = st.selectbox(
+                "聚合函数", ["mean", "sum", "count", "min", "max", "std"]
             )
-            
-        # Tab 2: 透视表
-        with tab2:
-            st.subheader("透视分析")
-            
-            # 使用包含新变量的 final_df 进行透视
-            all_columns = list(final_df.columns)
-            
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                idx = st.multiselect("行维度 (Index)", options=all_columns)
-            with c2:
-                col = st.multiselect("列维度 (Columns)", options=all_columns)
-            with c3:
-                val = st.multiselect("值字段 (Values)", options=all_columns)
-            with c4:
-                agg = st.selectbox("聚合函数", ["mean", "sum", "count", "min", "max", "std"])
-            
-            if val:
-                try:
-                    # 生成透视表
-                    pivot = pd.pivot_table(
-                        final_df, 
-                        index=idx or None, 
-                        columns=col or None, 
-                        values=val, 
-                        aggfunc=agg
-                    )
-                    st.dataframe(pivot, use_container_width=True)
-                    
-                    # 下载透视结果
-                    pivot_csv = pivot.to_csv().encode('utf-8-sig')
-                    st.download_button(
-                        label="📥 下载透视结果",
-                        data=pivot_csv,
-                        file_name="pivot_table.csv",
-                        mime="text/csv"
-                    )
-                except Exception as e:
-                    st.error(f"透视表生成失败: {e}")
-            else:
-                st.info("👆 请至少选择一个【值字段 (Values)】来生成透视表。")
+
+        if val:
+            try:
+                # 生成透视表
+                pivot = pd.pivot_table(
+                    final_df,
+                    index=idx or None,
+                    columns=col or None,
+                    values=val,
+                    aggfunc=agg,
+                )
+                st.dataframe(pivot, use_container_width=True)
+
+                # 下载透视结果
+                pivot_csv = pivot.to_csv().encode("utf-8-sig")
+                st.download_button(
+                    label="📥 下载透视结果",
+                    data=pivot_csv,
+                    file_name="pivot_table.csv",
+                    mime="text/csv",
+                )
+            except Exception as e:
+                st.error(f"透视表生成失败: {e}")
+        else:
+            st.info("👆 请至少选择一个【值字段 (Values)】来生成透视表。")
 
 if __name__ == "__main__":
     main()
