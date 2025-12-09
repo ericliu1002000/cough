@@ -2,7 +2,9 @@ import json
 from typing import Any, Dict, List
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
+from streamlit_plotly_events import plotly_events
 
 from settings import get_engine
 from utils import (
@@ -100,6 +102,101 @@ def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
             st.error(f"⚠️ 计算规则 `{rule['name']}` 执行失败: {e}")
             
     return df_calc
+
+
+def draw_spaghetti_chart(
+    df: pd.DataFrame,
+    subj_col: str,
+    value_col: str,
+    title: str,
+    key: str,
+) -> None:
+    """
+    绘制单个“透视单元格”的面条图 / strip 图：
+    - 纵轴: 受试者 ID (subj_col)
+    - 横轴: 数值字段 (value_col)
+    - 统计量: 按 agg_func 计算的汇总值（例如 mean），以一条竖线标注。
+
+    点击任意点后，将选中的受试者 ID 写入 session_state['selected_subject_id']。
+    """
+    if df.empty:
+        st.info("该组合下无数据。")
+        return
+
+    if subj_col not in df.columns or value_col not in df.columns:
+        st.info("受试者 ID 或数值列在当前数据集中不存在。")
+        return
+
+    # st.dataframe(df, width="stretch")
+    
+    tmp = df[[subj_col, value_col]].copy()
+    # 数值列强制转为数值类型
+    tmp[value_col] = pd.to_numeric(tmp[value_col], errors="coerce")
+    
+    tmp = tmp.dropna(subset=[value_col])
+    if tmp.empty:
+        st.info("该组合下无有效数值数据。")
+        return
+    # st.dataframe(tmp)
+    
+    # 个体点：横轴为数值，纵轴为受试者 ID
+    fig = px.scatter(
+        tmp,
+        x=value_col,
+        y=subj_col,
+        opacity=0.6,
+        hover_data={subj_col: True, value_col: True},
+        # 使用列名而不是 Series，便于在事件中读取 customdata
+        custom_data=[subj_col],
+    )
+
+    # fig.update_traces(text=tmp[value_col].round(2), textposition="middle right")
+
+
+
+    # 统计量计算：始终使用均值，作为组水平的代表
+    series = tmp[value_col]
+    agg_value = series.mean()
+    try:
+        agg_x = float(agg_value)
+        fig.add_vline(
+            x=agg_x,
+            line_width=3,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"mean: {agg_x:.2f}",
+            annotation_position="top",
+        )
+    except Exception:
+        pass
+
+    fig.update_layout(
+        title=title,
+        xaxis_title=value_col,
+        yaxis_title=subj_col,
+    )
+
+    st.plotly_chart(fig, width="stretch")
+
+    # events = plotly_events(
+    #     fig,
+    #     click_event=True,
+    #     select_event=False,
+    #     hover_event=False,
+    #     key=key,
+    # )
+    
+
+    # if events:
+    #     event = events[0]
+    #     # 优先从 customdata 中取受试者 ID；若不存在则退化为使用 y 值
+    #     customdata = event.get("customdata")
+    #     if customdata:
+    #         subj_id = customdata[0]
+    #     else:
+    #         subj_id = event.get("y")
+    #     if subj_id is not None:
+    #         st.session_state["selected_subject_id"] = subj_id
 
 
 def main() -> None:
@@ -238,7 +335,7 @@ def main() -> None:
         st.write(
             f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
         )
-        st.dataframe(final_df, use_container_width=True)
+        st.dataframe(final_df, width="stretch")
 
         csv = final_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
@@ -250,7 +347,7 @@ def main() -> None:
 
         # 紧接着展示透视分析区域
         st.divider()
-        st.subheader("📊 透视分析")
+        st.subheader("📊 透视分析 & 面条图")
 
         # 使用包含新变量的 final_df 进行透视
         all_columns = list(final_df.columns)
@@ -267,19 +364,25 @@ def main() -> None:
                 "聚合函数", ["mean", "sum", "count", "min", "max", "std"]
             )
 
-        if val:
+        if not (idx and col and val):
+            st.info("👆 请先选择【行维度、列维度和值字段】之后，再进行透视和绘图。")
+        else:
+            # 透视表：允许多维，但面条图目前只支持单一行维度 / 列维度 / 值字段
             try:
-                # 生成透视表
+                # 在透视前，确保值字段列为数值类型，避免 mean 等聚合在 object 上失败
+                pivot_source = final_df.copy()
+                for v in val:
+                    pivot_source[v] = pd.to_numeric(pivot_source[v], errors="coerce")
+
                 pivot = pd.pivot_table(
-                    final_df,
+                    pivot_source,
                     index=idx or None,
                     columns=col or None,
                     values=val,
                     aggfunc=agg,
                 )
-                st.dataframe(pivot, use_container_width=True)
+                st.dataframe(pivot, width="stretch")
 
-                # 下载透视结果
                 pivot_csv = pivot.to_csv().encode("utf-8-sig")
                 st.download_button(
                     label="📥 下载透视结果",
@@ -289,8 +392,74 @@ def main() -> None:
                 )
             except Exception as e:
                 st.error(f"透视表生成失败: {e}")
-        else:
-            st.info("👆 请至少选择一个【值字段 (Values)】来生成透视表。")
+
+            # 只有在行维度、列维度、值字段各选 1 个时，才绘制面条图
+            if len(idx) == 1 and len(col) == 1 and len(val) == 1:
+                row_field = idx[0]
+                col_field = col[0]
+                value_field = val[0]
+
+                st.markdown("----")
+                st.subheader("📈 透视单元格面条图（个体分布 + 统计线）")
+
+                # 选择受试者 ID 列
+                id_candidates = ["USUBJID", "SUBJID", "SUBJECTID", "ID"]
+                default_id_idx = 0
+                for token in id_candidates:
+                    for i, c in enumerate(all_columns):
+                        if token in c.upper():
+                            default_id_idx = i
+                            break
+                    else:
+                        continue
+                    break
+
+                subj_col = st.selectbox(
+                    "受试者 ID 列",
+                    options=all_columns,
+                    index=default_id_idx,
+                )
+
+                # 行 / 列取值
+                row_values = (
+                    final_df[row_field].dropna().astype(str).drop_duplicates().tolist()
+                )
+                col_values = (
+                    final_df[col_field].dropna().astype(str).drop_duplicates().tolist()
+                )
+
+                # 一行一个图表：遍历行维度和列维度的笛卡尔积
+                for rv in row_values:
+                    for cv in col_values:
+                        st.markdown(f"##### {row_field}={rv} | {col_field}={cv}")
+                        cell_df = final_df[
+                            (final_df[row_field].astype(str) == rv)
+                            & (final_df[col_field].astype(str) == cv)
+                        ]
+                        
+                        title = f"{row_field}={rv} | {col_field}={cv}"
+                        key = f"cell_{row_field}_{rv}_{col_field}_{cv}"
+                        draw_spaghetti_chart(
+                            cell_df,
+                            subj_col=subj_col,
+                            value_col=value_field,
+                            title=title,
+                            key=key,
+                        )
+                        
+                        
+
+                # 若有选中的受试者，则在最底部展示其全程明细
+                subj_id = st.session_state.get("selected_subject_id")
+                if subj_id is not None:
+                    st.markdown("----")
+                    st.subheader(f"🔍 受试者 {subj_id} 全程明细")
+                    detail_df = (
+                        final_df[final_df[subj_col] == subj_id]
+                        .sort_values(by=row_field)
+                        .reset_index(drop=True)
+                    )
+                    st.dataframe(detail_df, width="stretch")
 
 if __name__ == "__main__":
     main()

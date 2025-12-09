@@ -13,10 +13,10 @@ from settings import get_engine
 # ===========================
 
 SUBJECT_ID_ALIASES = [
-    "SUBJECTID",  # 标准名称 (最优先)
     "SUBJID",  # 常见变体
-    "patient_id",  # 外部数据常见名称
     "USUBJID",  # CDISC 标准名称 (备用)
+    "SUBJECTID",  # 标准名称 (最优先)
+    "patient_id",  # 外部数据常见名称
 ]
 
 OPERATORS = {
