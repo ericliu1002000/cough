@@ -4,7 +4,8 @@ from typing import Any, Dict, List
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from streamlit_plotly_events import plotly_events
+# [移除] 不再需要这个第三方库，避免布局 bug
+# from streamlit_plotly_events import plotly_events
 
 from settings import get_engine
 from utils import (
@@ -56,13 +57,6 @@ def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
 def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
     """
     核心逻辑：按顺序应用计算规则（二段配置）。
-    
-    参数:
-        df: 原始 DataFrame
-        rules: 规则列表
-        
-    返回:
-        处理后的新 DataFrame（包含新计算的列）
     """
     # 创建副本，以免修改 session_state 中的原始数据
     df_calc = df.copy()
@@ -79,17 +73,13 @@ def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
             if not valid_cols:
                 continue
 
-            # 2. 【关键修复】强制将参与计算的列转换为数字类型
-            # errors='coerce' 意味着：如果遇到无法转换的值（如 "N/A" 或纯文本），这就变成 NaN (空值)，而不会报错卡死
+            # 2. 强制将参与计算的列转换为数字类型
             for col in valid_cols:
-                # 检查一下是否已经是数字，如果不是才转，避免重复操作（虽然重复转也没事）
                 if not pd.api.types.is_numeric_dtype(df_calc[col]):
                     df_calc[col] = pd.to_numeric(df_calc[col], errors='coerce')
 
             # 3. 根据选择的方法进行行级运算 (axis=1)
-            # 此时 df_calc[valid_cols] 里的数据已经是数字或 NaN 了
             if method == '求和 (Sum)':
-                # min_count=1 确保如果整行都是 NaN，结果也是 NaN 而不是 0
                 df_calc[name] = df_calc[valid_cols].sum(axis=1, min_count=1)
             elif method == '平均值 (Mean)':
                 df_calc[name] = df_calc[valid_cols].mean(axis=1)
@@ -112,12 +102,12 @@ def draw_spaghetti_chart(
     key: str,
 ) -> None:
     """
-    绘制单个“透视单元格”的面条图 / strip 图：
+    绘制单个“透视单元格”的散点图（原 spaghetti chart）：
     - 纵轴: 受试者 ID (subj_col)
     - 横轴: 数值字段 (value_col)
-    - 统计量: 按 agg_func 计算的汇总值（例如 mean），以一条竖线标注。
+    - 统计量: 均值竖线标注。
 
-    点击任意点后，将选中的受试者 ID 写入 session_state['selected_subject_id']。
+    使用 Streamlit 原生 on_select 事件处理点击交互。
     """
     if df.empty:
         st.info("该组合下无数据。")
@@ -127,34 +117,30 @@ def draw_spaghetti_chart(
         st.info("受试者 ID 或数值列在当前数据集中不存在。")
         return
 
-    # st.dataframe(df, width="stretch")
-    
+    # 数据清洗
     tmp = df[[subj_col, value_col]].copy()
-    # 数值列强制转为数值类型
     tmp[value_col] = pd.to_numeric(tmp[value_col], errors="coerce")
-    
     tmp = tmp.dropna(subset=[value_col])
+    
     if tmp.empty:
         st.info("该组合下无有效数值数据。")
         return
-    # st.dataframe(tmp)
     
-    # 个体点：横轴为数值，纵轴为受试者 ID
+    # 绘图：个体点
     fig = px.scatter(
         tmp,
         x=value_col,
         y=subj_col,
         opacity=0.6,
         hover_data={subj_col: True, value_col: True},
-        # 使用列名而不是 Series，便于在事件中读取 customdata
+        # 【关键】将受试者ID放入 custom_data，以便在点击事件中精确获取
         custom_data=[subj_col],
     )
 
-    # fig.update_traces(text=tmp[value_col].round(2), textposition="middle right")
+    # 显示数值标签
+    fig.update_traces(text=tmp[value_col].round(2), textposition="middle right")
 
-
-
-    # 统计量计算：始终使用均值，作为组水平的代表
+    # 统计量计算：添加均值线
     series = tmp[value_col]
     agg_value = series.mean()
     try:
@@ -174,29 +160,40 @@ def draw_spaghetti_chart(
         title=title,
         xaxis_title=value_col,
         yaxis_title=subj_col,
+        height=400, # 设定一个合理的高度
+        margin=dict(l=20, r=20, t=40, b=20),
     )
 
-    st.plotly_chart(fig, width="stretch")
+    # =========================================================
+    # 使用 Streamlit 原生交互：点击点后写入 session_state
+    # =========================================================
+    st.plotly_chart(
+        fig,
+        width="stretch",
+        on_select="rerun",       # 点击/选择后触发一次 rerun
+        selection_mode="points", # 支持点级选择
+        key=key,
+    )
 
-    # events = plotly_events(
-    #     fig,
-    #     click_event=True,
-    #     select_event=False,
-    #     hover_event=False,
-    #     key=key,
-    # )
-    
+    # rerun 后，从 session_state[key] 中读取选中点信息
+    chart_state = st.session_state.get(key)
+    if chart_state is not None:
+        # 兼容对象属性或 dict 两种形式
+        selection = getattr(chart_state, "selection", None)
+        if selection is None and isinstance(chart_state, dict):
+            selection = chart_state.get("selection")
 
-    # if events:
-    #     event = events[0]
-    #     # 优先从 customdata 中取受试者 ID；若不存在则退化为使用 y 值
-    #     customdata = event.get("customdata")
-    #     if customdata:
-    #         subj_id = customdata[0]
-    #     else:
-    #         subj_id = event.get("y")
-    #     if subj_id is not None:
-    #         st.session_state["selected_subject_id"] = subj_id
+        if selection and "points" in selection and selection["points"]:
+            clicked_point = selection["points"][0]
+            custom_data = clicked_point.get("customdata")
+            if custom_data:
+                selected_id = custom_data[0]
+            else:
+                # 降级方案：若 customdata 不存在，则取 y 值（本图中 y 轴即 ID）
+                selected_id = clicked_point.get("y")
+
+            if selected_id is not None:
+                st.session_state["selected_subject_id"] = selected_id
 
 
 def main() -> None:
@@ -335,7 +332,7 @@ def main() -> None:
         st.write(
             f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
         )
-        st.dataframe(final_df, width="stretch")
+        st.dataframe(final_df, use_container_width=True)
 
         csv = final_df.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
@@ -347,7 +344,7 @@ def main() -> None:
 
         # 紧接着展示透视分析区域
         st.divider()
-        st.subheader("📊 透视分析 & 面条图")
+        st.subheader("📊 透视分析 & 图表")
 
         # 使用包含新变量的 final_df 进行透视
         all_columns = list(final_df.columns)
@@ -367,9 +364,9 @@ def main() -> None:
         if not (idx and col and val):
             st.info("👆 请先选择【行维度、列维度和值字段】之后，再进行透视和绘图。")
         else:
-            # 透视表：允许多维，但面条图目前只支持单一行维度 / 列维度 / 值字段
+            # 透视表
             try:
-                # 在透视前，确保值字段列为数值类型，避免 mean 等聚合在 object 上失败
+                # 在透视前，确保值字段列为数值类型
                 pivot_source = final_df.copy()
                 for v in val:
                     pivot_source[v] = pd.to_numeric(pivot_source[v], errors="coerce")
@@ -381,7 +378,7 @@ def main() -> None:
                     values=val,
                     aggfunc=agg,
                 )
-                st.dataframe(pivot, width="stretch")
+                st.dataframe(pivot, use_container_width=True)
 
                 pivot_csv = pivot.to_csv().encode("utf-8-sig")
                 st.download_button(
@@ -393,17 +390,17 @@ def main() -> None:
             except Exception as e:
                 st.error(f"透视表生成失败: {e}")
 
-            # 只有在行维度、列维度、值字段各选 1 个时，才绘制面条图
+            # 只有在行维度、列维度、值字段各选 1 个时，才绘制图表
             if len(idx) == 1 and len(col) == 1 and len(val) == 1:
                 row_field = idx[0]
                 col_field = col[0]
                 value_field = val[0]
 
                 st.markdown("----")
-                st.subheader("📈 透视单元格面条图（个体分布 + 统计线）")
+                st.subheader("📈 透视单元格分布图")
 
                 # 选择受试者 ID 列
-                id_candidates = ["USUBJID", "SUBJID", "SUBJECTID", "ID"]
+                id_candidates = ["SUBJID","USUBJID", "SUBJECTID", "ID"]
                 default_id_idx = 0
                 for token in id_candidates:
                     for i, c in enumerate(all_columns):
@@ -431,7 +428,7 @@ def main() -> None:
                 # 一行一个图表：遍历行维度和列维度的笛卡尔积
                 for rv in row_values:
                     for cv in col_values:
-                        st.markdown(f"##### {row_field}={rv} | {col_field}={cv}")
+                        
                         cell_df = final_df[
                             (final_df[row_field].astype(str) == rv)
                             & (final_df[col_field].astype(str) == cv)
@@ -447,8 +444,6 @@ def main() -> None:
                             key=key,
                         )
                         
-                        
-
                 # 若有选中的受试者，则在最底部展示其全程明细
                 subj_id = st.session_state.get("selected_subject_id")
                 if subj_id is not None:
@@ -459,7 +454,7 @@ def main() -> None:
                         .sort_values(by=row_field)
                         .reset_index(drop=True)
                     )
-                    st.dataframe(detail_df, width="stretch")
+                    st.dataframe(detail_df, use_container_width=True)
 
 if __name__ == "__main__":
     main()
