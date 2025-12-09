@@ -141,19 +141,51 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
         # 统一二段配置的 JSON 结构，保证至少包含：
         # - calc_rules: List[Dict]
         # - note: str
+        # - exclusions: List[Dict]
+        # - pivot: Dict[str, Any]
         # 同时兼容历史数据（仅存 List 或 None）。
         if raw_calculation is None:
-            calculation: Dict[str, Any] = {"calc_rules": [], "note": ""}
+            calculation: Dict[str, Any] = {
+                "calc_rules": [],
+                "note": "",
+                "exclusions": [],
+                "pivot": {
+                    "index": [],
+                    "columns": [],
+                    "values": [],
+                    "agg": "mean",
+                },
+            }
         elif isinstance(raw_calculation, list):
             # 早期版本只保存了规则列表
-            calculation = {"calc_rules": raw_calculation, "note": ""}
+            calculation = {
+                "calc_rules": raw_calculation,
+                "note": "",
+                "exclusions": [],
+                "pivot": {
+                    "index": [],
+                    "columns": [],
+                    "values": [],
+                    "agg": "mean",
+                },
+            }
         elif isinstance(raw_calculation, dict):
             # 复制一份，补齐默认键，保留未来可能增加的字段（如 pivot、exclusions）
             calculation = dict(raw_calculation)
             calculation.setdefault("calc_rules", [])
             calculation.setdefault("note", "")
+            calculation.setdefault("exclusions", [])
+            calculation.setdefault(
+                "pivot",
+                {"index": [], "columns": [], "values": [], "agg": "mean"},
+            )
         else:
-            calculation = {"calc_rules": [], "note": ""}
+            calculation = {
+                "calc_rules": [],
+                "note": "",
+                "exclusions": [],
+                "pivot": {"index": [], "columns": [], "values": [], "agg": "mean"},
+            }
 
         return {"extraction": extraction, "calculation": calculation}
     except Exception as e:

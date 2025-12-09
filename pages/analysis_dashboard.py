@@ -236,10 +236,31 @@ def main() -> None:
             if isinstance(calculation_cfg, dict):
                 st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
                 st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
+                st.session_state["exclusions"] = calculation_cfg.get("exclusions", []) or []
+                st.session_state["pivot_config"] = calculation_cfg.get("pivot", {}) or {
+                    "index": [],
+                    "columns": [],
+                    "values": [],
+                    "agg": "mean",
+                }
             else:
                 # 兼容历史：仅规则列表
                 st.session_state["calc_rules"] = calculation_cfg or []
                 st.session_state["calc_note"] = ""
+                st.session_state["exclusions"] = []
+                st.session_state["pivot_config"] = {
+                    "index": [],
+                    "columns": [],
+                    "values": [],
+                    "agg": "mean",
+                }
+
+        # 将 pivot_config 同步到对应的控件 key，确保默认值生效
+        pivot_cfg = st.session_state.get("pivot_config", {})
+        st.session_state["pivot_index"] = pivot_cfg.get("index", [])
+        st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
+        st.session_state["pivot_values"] = pivot_cfg.get("values", [])
+        st.session_state["pivot_agg"] = pivot_cfg.get("agg", "mean")
 
         # 切换配置时，清空与数据结果相关的状态，避免串数据
         st.session_state.pop("raw_df", None)
@@ -266,16 +287,46 @@ def main() -> None:
                 if isinstance(calculation_cfg, dict):
                     st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
                     st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
+                    st.session_state["exclusions"] = calculation_cfg.get("exclusions", []) or []
+                    st.session_state["pivot_config"] = calculation_cfg.get("pivot", {}) or {
+                        "index": [],
+                        "columns": [],
+                        "values": [],
+                        "agg": "mean",
+                    }
                 else:
                     # 兼容历史结构：直接存的是规则列表
                     st.session_state["calc_rules"] = calculation_cfg or []
                     st.session_state["calc_note"] = ""
+                    st.session_state["exclusions"] = []
+                    st.session_state["pivot_config"] = {
+                        "index": [],
+                        "columns": [],
+                        "values": [],
+                        "agg": "mean",
+                    }
 
                 # 初始化 Session State（防止后续 Widget 报 key 不存在）
                 if "calc_rules" not in st.session_state:
                     st.session_state["calc_rules"] = []
                 if "calc_note" not in st.session_state:
                     st.session_state["calc_note"] = ""
+                if "exclusions" not in st.session_state:
+                    st.session_state["exclusions"] = []
+                if "pivot_config" not in st.session_state:
+                    st.session_state["pivot_config"] = {
+                        "index": [],
+                        "columns": [],
+                        "values": [],
+                        "agg": "mean",
+                    }
+
+                # 同步 pivot_config 到控件 key
+                pivot_cfg = st.session_state.get("pivot_config", {})
+                st.session_state["pivot_index"] = pivot_cfg.get("index", [])
+                st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
+                st.session_state["pivot_values"] = pivot_cfg.get("values", [])
+                st.session_state["pivot_agg"] = pivot_cfg.get("agg", "mean")
                 
                 st.success(f"数据加载成功！共 {len(df_result)} 行。")
             else:
@@ -297,11 +348,20 @@ def main() -> None:
         st.subheader("🧮 衍生变量计算 (二段配置)")
         st.caption("在此处定义计算规则，例如：量表总分 = Q1 + Q2 + ...")
         
-        # 确保规则列表和备注字段存在
+        # 确保规则列表、剔除规则、透视配置和备注字段存在
         if "calc_rules" not in st.session_state:
             st.session_state["calc_rules"] = []
         if "calc_note" not in st.session_state:
             st.session_state["calc_note"] = ""
+        if "exclusions" not in st.session_state:
+            st.session_state["exclusions"] = []
+        if "pivot_config" not in st.session_state:
+            st.session_state["pivot_config"] = {
+                "index": [],
+                "columns": [],
+                "values": [],
+                "agg": "mean",
+            }
 
         # [A] 添加新规则的表单
         with st.expander("➕ 添加新计算规则", expanded=True):
@@ -351,7 +411,74 @@ def main() -> None:
                         st.session_state["calc_rules"].pop(i)
                         st.rerun()
 
-        # [C-1] 备注信息（Note）
+        # [C-1] 数据剔除规则（Exclusions）
+        st.markdown("##### 数据剔除规则")
+        st.caption("在透视分析和绘图前剔除不需要的数据行，例如某些 ARM、VISIT 或特定受试者 ID。")
+
+        # 简化：当前版本支持「单字段、多取值」的一组剔除条件，
+        # 直接由下方两个控件实时映射到 exclusions，而不是通过额外按钮。
+        with st.expander("配置剔除条件", expanded=True):
+            excl_col1, excl_col2 = st.columns([2, 3])
+
+            # 计算默认字段与默认取值，优先使用已保存的 exclusions
+            current_exclusions = st.session_state.get("exclusions", [])
+            if current_exclusions:
+                cur_rule = current_exclusions[0]
+                default_field = cur_rule.get("field")
+                default_values = [str(v) for v in cur_rule.get("values", [])]
+            else:
+                default_field = None
+                default_values = []
+
+            all_cols = list(raw_df.columns)
+            with excl_col1:
+                # 根据默认字段计算 index
+                if default_field in all_cols:
+                    default_idx = all_cols.index(default_field)
+                else:
+                    default_idx = 0
+                excl_field = st.selectbox(
+                    "字段名",
+                    options=all_cols,
+                    index=default_idx,
+                )
+            with excl_col2:
+                unique_vals = (
+                    raw_df[excl_field]
+                    .dropna()
+                    .astype(str)
+                    .drop_duplicates()
+                    .head(200)
+                    .tolist()
+                )
+                # default 只在首次渲染时生效；这里的 default_values 来自已保存规则
+                excl_values = st.multiselect(
+                    "要剔除的取值",
+                    options=unique_vals,
+                    default=default_values,
+                )
+
+            # 将当前选择实时映射为一条剔除规则写入 session_state["exclusions"]
+            if excl_values:
+                st.session_state["exclusions"] = [
+                    {
+                        "field": excl_field,
+                        "op": "NOT IN",
+                        "values": excl_values,
+                    }
+                ]
+            else:
+                st.session_state["exclusions"] = []
+
+            # 预览当前将要生效的剔除条件
+            if st.session_state["exclusions"]:
+                rule = st.session_state["exclusions"][0]
+                vals_preview = ", ".join(map(str, rule.get("values", [])))
+                if len(vals_preview) > 60:
+                    vals_preview = vals_preview[:60] + "..."
+                st.info(f"当前规则：`{rule.get('field')}` NOT IN ({vals_preview})")
+
+        # [C-2] 备注信息（Note）
         st.markdown("##### 备注 (Note)")
         st.caption("用于记录本次二段配置的背景、假设或剔除逻辑，便于审计与追溯。")
         # 仅使用 key 绑定 Session State，默认值来自 st.session_state['calc_note']
@@ -362,37 +489,60 @@ def main() -> None:
             height=100,
         )
 
-        # [D] 保存计算配置到数据库（规则 + 备注）
+        # 小提示，方便确认当前会被保存的剔除规则条数
+        st.caption(f"当前剔除规则数量：{len(st.session_state['exclusions'])}")
+
+        # 保存前，先刷新 pivot_config 与当前控件值保持一致
+        st.session_state["pivot_config"] = {
+            "index": st.session_state.get("pivot_index", []),
+            "columns": st.session_state.get("pivot_columns", []),
+            "values": st.session_state.get("pivot_values", []),
+            "agg": st.session_state.get("pivot_agg", "mean"),
+        }
+
+        # [D] 保存计算配置到数据库（规则 + 剔除 + 备注 + 透视配置）
         if st.button("💾 保存计算规则"):
             from utils import save_calculation_config
             calculation_payload = {
                 "calc_rules": st.session_state["calc_rules"],
                 "note": st.session_state.get("calc_note", ""),
+                "exclusions": st.session_state.get("exclusions", []),
+                "pivot": st.session_state.get("pivot_config", {}),
             }
             save_calculation_config(selected_row["setup_name"], calculation_payload)
-            st.success("二段计算规则和备注已保存。")
+            st.success("二段计算规则、剔除规则、透视配置和备注已保存。")
 
-        # [C] 实时执行计算流水线
-        # 这一步非常快，因为是在内存中操作 Pandas
-        final_df = apply_calculations(raw_df, st.session_state["calc_rules"])
+        # [E] 实时执行计算流水线：先应用剔除规则，再做衍生变量计算
+        filtered_df = raw_df.copy()
+        for rule in st.session_state["exclusions"]:
+            field = rule.get("field")
+            values = rule.get("values") or []
+            if not field or field not in filtered_df.columns or not values:
+                continue
+            # 这里 values 来自界面 multiselect，已经是字符串
+            # 为避免类型问题，将比较双方统一为字符串
+            mask = ~filtered_df[field].astype(str).isin([str(v) for v in values])
+            filtered_df = filtered_df[mask]
+
+        final_df = apply_calculations(filtered_df, st.session_state["calc_rules"])
 
         # --- 结果展示区 ---
         st.divider()
 
-        # 先展示数据预览
-        st.subheader("📄 数据预览")
-        st.write(
-            f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
-        )
-        st.dataframe(final_df, use_container_width=True)
+        # 先展示数据预览（默认折叠，避免占用过多空间）
+        with st.expander("📄 数据预览", expanded=False):
+            st.write(
+                f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
+            )
+            st.dataframe(final_df, use_container_width=True)
 
-        csv = final_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            label="📥 下载最终数据 (CSV)",
-            data=csv,
-            file_name="analysis_final.csv",
-            mime="text/csv",
-        )
+            csv = final_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                label="📥 下载最终数据 (CSV)",
+                data=csv,
+                file_name="analysis_final.csv",
+                mime="text/csv",
+            )
 
         # 紧接着展示透视分析区域
         st.divider()
@@ -401,16 +551,45 @@ def main() -> None:
         # 使用包含新变量的 final_df 进行透视
         all_columns = list(final_df.columns)
 
+        # 读取当前透视配置，作为默认值
+        pivot_cfg = st.session_state.get("pivot_config", {})
+        default_idx = [c for c in pivot_cfg.get("index", []) if c in all_columns]
+        default_col = [c for c in pivot_cfg.get("columns", []) if c in all_columns]
+        default_val = [c for c in pivot_cfg.get("values", []) if c in all_columns]
+        default_agg = pivot_cfg.get("agg", "mean")
+
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            idx = st.multiselect("行维度 (Index)", options=all_columns)
+            idx = st.multiselect(
+                "行维度 (Index)",
+                options=all_columns,
+                default=default_idx,
+                key="pivot_index",
+            )
         with c2:
-            col = st.multiselect("列维度 (Columns)", options=all_columns)
+            col = st.multiselect(
+                "列维度 (Columns)",
+                options=all_columns,
+                default=default_col,
+                key="pivot_columns",
+            )
         with c3:
-            val = st.multiselect("值字段 (Values)", options=all_columns)
+            val = st.multiselect(
+                "值字段 (Values)",
+                options=all_columns,
+                default=default_val,
+                key="pivot_values",
+            )
         with c4:
             agg = st.selectbox(
-                "聚合函数", ["mean", "sum", "count", "min", "max", "std"]
+                "聚合函数",
+                ["mean", "sum", "count", "min", "max", "std"],
+                index=["mean", "sum", "count", "min", "max", "std"].index(
+                    default_agg
+                )
+                if default_agg in ["mean", "sum", "count", "min", "max", "std"]
+                else 0,
+                key="pivot_agg",
             )
 
         if not (idx and col and val):
