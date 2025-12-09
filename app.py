@@ -60,6 +60,98 @@ def get_id_column(table_name, meta_data):
             return alias
     return None
 
+
+def fetch_all_setups():
+    """
+    从 analysis_list_setups 表读取所有已保存的配置列表。
+    返回列表，每项包含: id, setup_name, description。
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT id, setup_name, description "
+                    "FROM analysis_list_setups "
+                    "ORDER BY setup_name"
+                )
+            )
+            # SQLAlchemy 2.x 中需要通过 .mappings() 或 row._mapping 转成 dict
+            rows = [dict(row) for row in result.mappings()]
+        return rows
+    except Exception as e:
+        print(f"[Warning] 无法加载分析集配置列表: {e}")
+        return []
+
+
+def fetch_setup_config(setup_name: str):
+    """
+    根据 setup_name 读取单个配置的 config_json。
+    返回 Python dict，如果不存在则返回 None。
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT config_json FROM analysis_list_setups "
+                    "WHERE setup_name = :name"
+                ),
+                {"name": setup_name},
+            ).scalar()
+        if result is None:
+            return None
+        # 对于 JSON 类型字段，驱动可能返回 str 或 dict，统一转成 dict
+        if isinstance(result, str):
+            return json.loads(result)
+        return result
+    except Exception as e:
+        st.error(f"无法加载配置 `{setup_name}`: {e}")
+        return None
+
+
+def save_setup_config(setup_name: str, description: str | None, config: dict) -> None:
+    """
+    保存或更新分析集配置到 analysis_list_setups 表。
+    使用 setup_name 作为唯一键，幂等地插入 / 更新。
+    """
+    config_json = json.dumps(config, ensure_ascii=False)
+    engine = get_engine()
+    sql = text(
+        """
+        INSERT INTO analysis_list_setups (setup_name, description, config_json, created_at, updated_at)
+        VALUES (:name, :desc, :config_json, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            description = VALUES(description),
+            config_json = VALUES(config_json),
+            updated_at = NOW()
+        """
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(sql, {"name": setup_name, "desc": description, "config_json": config_json})
+            conn.commit()
+    except Exception as e:
+        st.error(f"保存配置 `{setup_name}` 失败: {e}")
+    finally:
+        engine.dispose()
+
+
+def delete_setup_config(setup_name: str) -> None:
+    """
+    删除指定名称的分析集配置。
+    """
+    engine = get_engine()
+    sql = text("DELETE FROM analysis_list_setups WHERE setup_name = :name")
+    try:
+        with engine.connect() as conn:
+            conn.execute(sql, {"name": setup_name})
+            conn.commit()
+    except Exception as e:
+        st.error(f"删除配置 `{setup_name}` 失败: {e}")
+    finally:
+        engine.dispose()
+
 @st.cache_data(ttl=600)  # 缓存10分钟，避免频繁查库
 def get_unique_values(table, column, limit=100):
     """
@@ -207,11 +299,71 @@ def remove_filter_row(idx):
 
 # --- 侧边栏 ---
 with st.sidebar:
+    # 配置管理区
+    st.header("🧩 分析集配置")
+
+    setups = fetch_all_setups()
+    setup_options = ["<新配置>"]
+    setup_name_to_desc = {}
+    for row in setups:
+        name = row["setup_name"]
+        desc = row.get("description") or ""
+        label = f"{name} - {desc}" if desc else name
+        setup_options.append(label)
+        setup_name_to_desc[label] = name
+
+    selected_setup_label = st.selectbox(
+        "选择已有配置",
+        options=setup_options,
+        index=0,
+    )
+
+    # 加载配置按钮
+    if selected_setup_label != "<新配置>":
+        selected_setup_name = setup_name_to_desc[selected_setup_label]
+
+        if st.button("✏️ 加载配置", key="btn_load_setup"):
+            cfg = fetch_setup_config(selected_setup_name)
+            if cfg is not None:
+                # 恢复选表
+                if "selected_tables" in cfg:
+                    st.session_state["selected_tables"] = cfg["selected_tables"]
+                # 恢复每张表的列选择
+                if "table_columns_map" in cfg:
+                    for tbl, cols in cfg["table_columns_map"].items():
+                        st.session_state[f"sel_col_{tbl}"] = cols
+                # 恢复筛选条件
+                conditions = cfg.get("filters", {}).get("conditions", [])
+                st.session_state.filter_rows = [{"id": i} for i in range(len(conditions))]
+                for i, cond in enumerate(conditions):
+                    st.session_state[f"f_tbl_{i}"] = cond.get("table")
+                    st.session_state[f"f_col_{i}"] = cond.get("col")
+                    st.session_state[f"f_op_{i}"] = cond.get("op")
+                    st.session_state[f"f_val_{i}"] = cond.get("val")
+                # 恢复黑名单
+                if "subject_blocklist" in cfg:
+                    st.session_state["subject_blocklist"] = cfg["subject_blocklist"]
+
+                st.success(f"已加载配置：{selected_setup_name}")
+                st.rerun()
+
+        # 删除配置按钮
+        if st.button("🗑️ 删除配置", key="btn_delete_setup"):
+            delete_setup_config(selected_setup_name)
+            st.success(f"已删除配置：{selected_setup_name}")
+            st.rerun()
+
+    st.markdown("---")
+
     st.header("⚙️ 全局配置")
     st.info(f"🔗 智能 Join 逻辑已启用。\nKey: {', '.join(SUBJECT_ID_ALIASES)}")
     
     st.subheader("🚫 受试者黑名单 (Not In)")
-    subject_blocklist = st.text_area("输入要排除的 ID (一行一个):", height=100)
+    subject_blocklist = st.text_area(
+        "输入要排除的 ID (一行一个):",
+        height=100,
+        key="subject_blocklist",
+    )
 
 # --- 主界面 ---
 st.subheader("1. 选择要拼接的表 (按 Join 顺序)")
@@ -219,6 +371,7 @@ selected_tables = st.multiselect(
     f"请选择表 (最多 {MAX_TABLE_NUMBER} 张):",
     options=all_tables,
     default=None,
+    key="selected_tables",
     help="第一个选中的表将作为主表 (Left Table)"
 )
 
@@ -385,3 +538,30 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
             st.warning("提示: 如果查询超时，请尝试减少选择的表数量或增加筛选条件。")
     else:
         st.error("无法生成 SQL，请检查配置。")
+
+# ===========================
+# 4. 保存分析集配置
+# ===========================
+st.divider()
+st.subheader("4. 保存当前分析集配置")
+
+with st.form("save_setup_form"):
+    setup_name_input = st.text_input("配置名称 (setup_name)*", key="setup_name_input")
+    description_input = st.text_input("备注说明 (可选)", key="description_input")
+    submitted = st.form_submit_button("💾 保存 / 更新配置")
+
+if submitted:
+    name = (setup_name_input or "").strip()
+    if not name:
+        st.error("配置名称不能为空。")
+    else:
+        # 组装当前配置
+        config = {
+            "selected_tables": selected_tables,
+            "table_columns_map": table_columns_map,
+            "filters": filters_config,
+            "subject_blocklist": subject_blocklist,
+            "max_table_number": MAX_TABLE_NUMBER,
+        }
+        save_setup_config(name, description_input or None, config)
+        st.success(f"配置 `{name}` 已保存 / 更新。")

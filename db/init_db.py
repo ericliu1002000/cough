@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List, Set
 
 import pandas as pd
+from sqlalchemy import text
 
 from settings import DATA_DIR, get_engine
 
@@ -218,6 +219,33 @@ def process_excel_file(file_path: str, engine, processed_table_names: Set[str]) 
             print("    写入完成。")
 
 
+def init_system_tables() -> None:
+    """
+    初始化系统级表结构（如分析集配置表）。
+
+    当前仅创建 analysis_list_setups 表：
+    - 用于存储分析集配置（选表、选列、筛选条件等）。
+    """
+    engine = get_engine()
+    ddl = """
+    CREATE TABLE IF NOT EXISTS `analysis_list_setups` (
+        `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        `setup_name` VARCHAR(100) NOT NULL UNIQUE,
+        `description` VARCHAR(255) NULL,
+        `config_json` JSON NOT NULL,
+        `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+        `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    """
+
+    print("[init_db] 确保系统表 analysis_list_setups 已创建。")
+    with engine.connect() as conn:
+        conn.execute(text(ddl))
+        conn.commit()
+
+    engine.dispose()
+
+
 def init_db() -> None:
     """
     脚本主入口：
@@ -233,6 +261,9 @@ def init_db() -> None:
     - 若中途没有异常：所有 Excel 内容写入数据库，对应表名=Sheet 名；
     - 若发现任何表名 / 列名问题：立即抛错并停止运行。
     """
+    # 先确保系统级表存在
+    init_system_tables()
+
     # 获取数据库连接（会自动建库）
     engine = get_engine()
 
