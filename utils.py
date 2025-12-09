@@ -1,0 +1,317 @@
+import json
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
+import streamlit as st
+from sqlalchemy import text
+
+from settings import get_engine
+
+# ===========================
+# 核心配置 & 常量
+# ===========================
+
+SUBJECT_ID_ALIASES = [
+    "SUBJECTID",  # 标准名称 (最优先)
+    "SUBJID",  # 常见变体
+    "patient_id",  # 外部数据常见名称
+    "USUBJID",  # CDISC 标准名称 (备用)
+]
+
+OPERATORS = {
+    "=": "等于 (=)",
+    ">": "大于 (>)",
+    "<": "小于 (<)",
+    ">=": "大于等于 (>=)",
+    "<=": "小于等于 (<=)",
+    "!=": "不等于 (!=)",
+    "IN": "包含于 (IN)",
+    "NOT IN": "不包含 (NOT IN)",
+    "LIKE": "像 (LIKE)",
+    "IS NULL": "为空",
+    "IS NOT NULL": "不为空",
+}
+
+
+# ===========================
+# 元数据与 ID 解析
+# ===========================
+
+def load_table_metadata() -> Dict[str, List[str]]:
+    """
+    加载表结构信息 (db/table_columns.json)。
+
+    返回:
+        {table_name: [col1, col2, ...], ...}
+    """
+    base_dir = Path(__file__).resolve().parent
+    json_path = base_dir / "db" / "table_columns.json"
+
+    if json_path.exists():
+        with json_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        st.error(
+            f"未找到表结构文件: {json_path}。请先运行 `python -m cough.db.exp_table_columns`。"
+        )
+        return {}
+
+
+def get_id_column(table_name: str, meta_data: Dict[str, List[str]]) -> str | None:
+    """
+    智能查找 ID 列名:
+    - 按 SUBJECT_ID_ALIASES 的优先级，在该表的列中查找第一个匹配的列名。
+    - 若未找到，返回 None。
+    """
+    available_columns = meta_data.get(table_name, [])
+    for alias in SUBJECT_ID_ALIASES:
+        if alias in available_columns:
+            return alias
+    return None
+
+
+# ===========================
+# 分析集配置 CRUD
+# ===========================
+
+def fetch_all_setups() -> List[Dict[str, Any]]:
+    """
+    从 analysis_list_setups 表读取所有已保存的配置列表。
+
+    返回:
+        [{'id': ..., 'setup_name': ..., 'description': ...}, ...]
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT id, setup_name, description "
+                    "FROM analysis_list_setups "
+                    "ORDER BY setup_name"
+                )
+            )
+            rows = [dict(row) for row in result.mappings()]
+        return rows
+    except Exception as e:
+        print(f"[Warning] 无法加载分析集配置列表: {e}")
+        return []
+
+
+def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
+    """
+    根据 setup_name 读取单个配置的 config_json。
+    返回 Python dict，如果不存在则返回 None。
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT config_json FROM analysis_list_setups "
+                    "WHERE setup_name = :name"
+                ),
+                {"name": setup_name},
+            ).scalar()
+        if result is None:
+            return None
+        # 对于 JSON 类型字段，驱动可能返回 str 或 dict，统一转成 dict
+        if isinstance(result, str):
+            return json.loads(result)
+        return result
+    except Exception as e:
+        st.error(f"无法加载配置 `{setup_name}`: {e}")
+        return None
+
+
+def save_setup_config(setup_name: str, description: str | None, config: Dict[str, Any]) -> None:
+    """
+    保存或更新分析集配置到 analysis_list_setups 表。
+    使用 setup_name 作为唯一键，幂等地插入 / 更新。
+    """
+    config_json = json.dumps(config, ensure_ascii=False)
+    engine = get_engine()
+    sql = text(
+        """
+        INSERT INTO analysis_list_setups (setup_name, description, config_json, created_at, updated_at)
+        VALUES (:name, :desc, :config_json, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            description = VALUES(description),
+            config_json = VALUES(config_json),
+            updated_at = NOW()
+        """
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                sql,
+                {"name": setup_name, "desc": description, "config_json": config_json},
+            )
+            conn.commit()
+    except Exception as e:
+        st.error(f"保存配置 `{setup_name}` 失败: {e}")
+    finally:
+        engine.dispose()
+
+
+def delete_setup_config(setup_name: str) -> None:
+    """
+    删除指定名称的分析集配置。
+    """
+    engine = get_engine()
+    sql = text("DELETE FROM analysis_list_setups WHERE setup_name = :name")
+    try:
+        with engine.connect() as conn:
+            conn.execute(sql, {"name": setup_name})
+            conn.commit()
+    except Exception as e:
+        st.error(f"删除配置 `{setup_name}` 失败: {e}")
+    finally:
+        engine.dispose()
+
+
+# ===========================
+# 数据值与 SQL 构建
+# ===========================
+
+@st.cache_data(ttl=600)  # 缓存10分钟，避免频繁查库
+def get_unique_values(table: str, column: str, limit: int = 100) -> List[str]:
+    """
+    去数据库查询某一列的去重值（用于辅助填空）。
+    """
+    try:
+        engine = get_engine()
+        # 加上反引号防止关键字冲突
+        query = f"SELECT DISTINCT `{column}` FROM `{table}` LIMIT {limit}"
+        df = pd.read_sql(query, engine)
+        # 将结果转为列表，过滤空值
+        values = df.iloc[:, 0].dropna().astype(str).tolist()
+        return sorted(values)
+    except Exception as e:
+        # 不阻塞主流程，只在后台记录
+        print(f"[Warning] 无法获取列值: {e}")
+        return []
+
+
+def format_value_for_sql(val: Any, operator: str) -> str:
+    """
+    根据操作符和值的类型，将其格式化为 SQL 字符串。
+    """
+    if operator in ["IS NULL", "IS NOT NULL"]:
+        return ""
+
+    def is_number(s: Any) -> bool:
+        try:
+            float(str(s))
+            return True
+        except ValueError:
+            return False
+
+    # 处理 IN / NOT IN (列表)
+    if operator in ["IN", "NOT IN"]:
+        # 如果是 multiselect 传来的 list
+        if isinstance(val, list):
+            items: List[str] = []
+            for v in val:
+                # 如果是数字，就不加引号；如果是字符串，加引号
+                if is_number(v):
+                    items.append(str(v))
+                else:
+                    items.append(f"'{v}'")
+            if not items:
+                return "('')"  # 空列表防报错
+            return f"({', '.join(items)})"
+        return str(val)  # 容错
+
+    # 处理单值
+    if is_number(val):
+        return str(val)
+    else:
+        return f"'{val}'"
+
+
+def build_sql(
+    selected_tables: List[str],
+    table_columns_map: Dict[str, List[str]],
+    filters: Dict[str, Any],
+    subject_blocklist: str,
+    meta_data: Dict[str, List[str]],
+) -> str | None:
+    """
+    构建最终 SQL。
+    """
+    if not selected_tables:
+        return None
+
+    # --- 1. 确定主表 ID ---
+    base_table = selected_tables[0]
+    base_id_col = get_id_column(base_table, meta_data)
+    if not base_id_col:
+        st.error(f"❌ 主表 `{base_table}` 中找不到 ID 列")
+        return None
+
+    # --- 2. SELECT ---
+    select_clauses: List[str] = []
+    # 强制加上 ID 列
+    select_clauses.append(f"`{base_table}`.`{base_id_col}` AS `SUBJECTID`")
+
+    for table in selected_tables:
+        cols = table_columns_map.get(table, [])
+        for col in cols:
+            select_clauses.append(f"`{table}`.`{col}` AS `{table}_{col}`")
+
+    select_sql = "SELECT\n    " + ",\n    ".join(select_clauses)
+
+    # --- 3. FROM & JOIN ---
+    from_sql = f"\nFROM `{base_table}`"
+    join_sql = ""
+    for i in range(1, len(selected_tables)):
+        current_table = selected_tables[i]
+        current_id_col = get_id_column(current_table, meta_data) or "SUBJECTID"
+        join_sql += (
+            f"\nLEFT JOIN `{current_table}` "
+            f"ON `{base_table}`.`{base_id_col}` = `{current_table}`.`{current_id_col}`"
+        )
+
+    # --- 4. WHERE (包含黑名单 + 可视化筛选器) ---
+    where_conditions: List[str] = []
+
+    # 4.1 黑名单
+    if subject_blocklist:
+        ids = [
+            x.strip()
+            for x in subject_blocklist.replace("，", ",").split("\n")
+            if x.strip()
+        ]
+        if ids:
+            id_list_str = "', '".join(ids)
+            where_conditions.append(
+                f"`{base_table}`.`{base_id_col}` NOT IN ('{id_list_str}')"
+            )
+
+    # 4.2 可视化筛选器 (Condition Builder)
+    if "conditions" in filters:
+        for cond in filters["conditions"]:
+            tbl = cond["table"]
+            col = cond["col"]
+            op = cond["op"]
+            val = cond["val"]
+
+            # 格式化值（加引号等）
+            sql_val = format_value_for_sql(val, op)
+
+            # 拼接: `adsl`.`AGE` > 18
+            clause = f"`{tbl}`.`{col}` {op} {sql_val}"
+            where_conditions.append(clause)
+
+    where_sql = ""
+    if where_conditions:
+        where_sql = "\nWHERE\n  " + "\n  AND ".join(where_conditions)
+
+    # --- 5. LIMIT (安全锁) ---
+    limit_sql = "\nLIMIT 1000"
+
+    final_sql = f"{select_sql}{from_sql}{join_sql}{where_sql}{limit_sql};"
+    return final_sql
+
