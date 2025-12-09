@@ -129,14 +129,19 @@ def main() -> None:
     # ===========================
     # 只有点击按钮时才去数据库查询，避免每次刷新都查
     if st.button("🚀 加载源数据", type="primary"):
-        # 获取完整的配置 JSON
-        cfg = fetch_setup_config(selected_row["setup_name"])
-        if cfg:
-            sql, df_result = run_analysis(cfg)
+        # 获取完整的配置（含一段/二段）
+        cfg_all = fetch_setup_config(selected_row["setup_name"])
+        if cfg_all:
+            extraction_cfg = cfg_all.get("extraction") or {}
+            calculation_cfg = cfg_all.get("calculation") or []
+
+            sql, df_result = run_analysis(extraction_cfg)
             if not df_result.empty:
                 # 将原始数据存入 Session State
                 st.session_state["raw_df"] = df_result
                 st.session_state["current_sql"] = sql
+                # 恢复二段配置（计算规则）
+                st.session_state["calc_rules"] = calculation_cfg or []
                 
                 # 初始化计算规则列表（如果还没有的话）
                 if "calc_rules" not in st.session_state:
@@ -213,6 +218,13 @@ def main() -> None:
                     if st.button("🗑️", key=f"del_rule_{i}"):
                         st.session_state["calc_rules"].pop(i)
                         st.rerun()
+
+        # [D] 保存计算规则到数据库（仅二段配置）
+        if st.button("💾 保存计算规则"):
+            from utils import save_calculation_config
+
+            save_calculation_config(selected_row["setup_name"], st.session_state["calc_rules"])
+            st.success("二段计算规则已保存。")
 
         # [C] 实时执行计算流水线
         # 这一步非常快，因为是在内存中操作 Pandas

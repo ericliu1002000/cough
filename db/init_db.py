@@ -224,23 +224,29 @@ def init_system_tables() -> None:
     初始化系统级表结构（如分析集配置表）。
 
     当前仅创建 analysis_list_setups 表：
-    - 用于存储分析集配置（选表、选列、筛选条件等）。
+    - 用于存储分析集配置（一段抽取配置 + 二段计算配置）。
     """
     engine = get_engine()
     ddl = """
-    CREATE TABLE IF NOT EXISTS `analysis_list_setups` (
+    DROP TABLE IF EXISTS `analysis_list_setups`;
+    CREATE TABLE `analysis_list_setups` (
         `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
         `setup_name` VARCHAR(100) NOT NULL UNIQUE,
         `description` VARCHAR(255) NULL,
-        `config_json` JSON NOT NULL,
+        `config_extraction` JSON NOT NULL,
+        `config_calculation` JSON NULL,
         `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
         `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     """
 
-    print("[init_db] 确保系统表 analysis_list_setups 已创建。")
+    print("[init_db] 重建系统表 analysis_list_setups。")
     with engine.connect() as conn:
-        conn.execute(text(ddl))
+        # 执行包含 DROP + CREATE 的复合语句
+        for statement in ddl.strip().split(";"):
+            stmt = statement.strip()
+            if stmt:
+                conn.execute(text(stmt))
         conn.commit()
 
     engine.dispose()

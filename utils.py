@@ -101,44 +101,73 @@ def fetch_all_setups() -> List[Dict[str, Any]]:
 
 def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
     """
-    根据 setup_name 读取单个配置的 config_json。
-    返回 Python dict，如果不存在则返回 None。
+    根据 setup_name 读取单个配置的一段/二段配置。
+
+    返回:
+        {
+          "extraction": {...},        # 一段配置 (dict)
+          "calculation": ... or None # 二段配置 (任意 JSON，可为 None)
+        }
+        如果不存在记录，则返回 None。
     """
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            result = conn.execute(
+            row = conn.execute(
                 text(
-                    "SELECT config_json FROM analysis_list_setups "
+                    "SELECT config_extraction, config_calculation "
+                    "FROM analysis_list_setups "
                     "WHERE setup_name = :name"
                 ),
                 {"name": setup_name},
-            ).scalar()
-        if result is None:
+            ).mappings().first()
+
+        if row is None:
             return None
-        # 对于 JSON 类型字段，驱动可能返回 str 或 dict，统一转成 dict
-        if isinstance(result, str):
-            return json.loads(result)
-        return result
+
+        def _normalize_json(value: Any) -> Any:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return value
+            return value
+
+        extraction = _normalize_json(row["config_extraction"])
+        calculation = _normalize_json(row["config_calculation"])
+
+        return {"extraction": extraction, "calculation": calculation}
     except Exception as e:
         st.error(f"无法加载配置 `{setup_name}`: {e}")
         return None
 
 
 def save_setup_config(setup_name: str, description: str | None, config: Dict[str, Any]) -> None:
+    """兼容旧接口，内部转调 save_extraction_config。"""
+    save_extraction_config(setup_name, description, config)
+
+
+def save_extraction_config(
+    setup_name: str, description: str | None, config_data: Dict[str, Any]
+) -> None:
     """
-    保存或更新分析集配置到 analysis_list_setups 表。
-    使用 setup_name 作为唯一键，幂等地插入 / 更新。
+    保存或更新「一段配置」到 analysis_list_setups.config_extraction。
+
+    逻辑：
+    - 若记录不存在：插入新记录，config_calculation 置为 NULL；
+    - 若记录存在：仅更新 description 与 config_extraction，不修改 config_calculation。
     """
-    config_json = json.dumps(config, ensure_ascii=False)
+    config_json = json.dumps(config_data, ensure_ascii=False)
     engine = get_engine()
     sql = text(
         """
-        INSERT INTO analysis_list_setups (setup_name, description, config_json, created_at, updated_at)
-        VALUES (:name, :desc, :config_json, NOW(), NOW())
+        INSERT INTO analysis_list_setups (setup_name, description, config_extraction, config_calculation, created_at, updated_at)
+        VALUES (:name, :desc, :config_extraction, NULL, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
             description = VALUES(description),
-            config_json = VALUES(config_json),
+            config_extraction = VALUES(config_extraction),
             updated_at = NOW()
         """
     )
@@ -146,11 +175,44 @@ def save_setup_config(setup_name: str, description: str | None, config: Dict[str
         with engine.connect() as conn:
             conn.execute(
                 sql,
-                {"name": setup_name, "desc": description, "config_json": config_json},
+                {
+                    "name": setup_name,
+                    "desc": description,
+                    "config_extraction": config_json,
+                },
             )
             conn.commit()
     except Exception as e:
-        st.error(f"保存配置 `{setup_name}` 失败: {e}")
+        st.error(f"保存一段配置 `{setup_name}` 失败: {e}")
+    finally:
+        engine.dispose()
+
+
+def save_calculation_config(setup_name: str, rules_data: Any) -> None:
+    """
+    保存或更新「二段配置」到 analysis_list_setups.config_calculation。
+
+    仅更新 config_calculation 字段，不修改一段配置。
+    """
+    config_json = json.dumps(rules_data, ensure_ascii=False)
+    engine = get_engine()
+    sql = text(
+        """
+        UPDATE analysis_list_setups
+        SET config_calculation = :config_calculation,
+            updated_at = NOW()
+        WHERE setup_name = :name
+        """
+    )
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                sql,
+                {"name": setup_name, "config_calculation": config_json},
+            )
+            conn.commit()
+    except Exception as e:
+        st.error(f"保存二段配置 `{setup_name}` 失败: {e}")
     finally:
         engine.dispose()
 
@@ -314,4 +376,3 @@ def build_sql(
 
     final_sql = f"{select_sql}{from_sql}{join_sql}{where_sql}{limit_sql};"
     return final_sql
-

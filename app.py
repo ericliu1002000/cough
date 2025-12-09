@@ -13,7 +13,7 @@ from utils import (
     build_sql,
     fetch_all_setups,
     fetch_setup_config,
-    save_setup_config,
+    save_extraction_config,
     delete_setup_config,
 )
 
@@ -68,26 +68,34 @@ with st.sidebar:
         selected_setup_name = setup_name_to_desc[selected_setup_label]
 
         if st.button("✏️ 加载配置", key="btn_load_setup"):
-            cfg = fetch_setup_config(selected_setup_name)
-            if cfg is not None:
+            cfg_all = fetch_setup_config(selected_setup_name)
+            if cfg_all is not None:
+                extraction_cfg = cfg_all.get("extraction") or {}
+
                 # 恢复选表
-                if "selected_tables" in cfg:
-                    st.session_state["selected_tables"] = cfg["selected_tables"]
+                if "selected_tables" in extraction_cfg:
+                    st.session_state["selected_tables"] = extraction_cfg[
+                        "selected_tables"
+                    ]
                 # 恢复每张表的列选择
-                if "table_columns_map" in cfg:
-                    for tbl, cols in cfg["table_columns_map"].items():
+                if "table_columns_map" in extraction_cfg:
+                    for tbl, cols in extraction_cfg["table_columns_map"].items():
                         st.session_state[f"sel_col_{tbl}"] = cols
                 # 恢复筛选条件
-                conditions = cfg.get("filters", {}).get("conditions", [])
-                st.session_state.filter_rows = [{"id": i} for i in range(len(conditions))]
+                conditions = extraction_cfg.get("filters", {}).get("conditions", [])
+                st.session_state.filter_rows = [
+                    {"id": i} for i in range(len(conditions))
+                ]
                 for i, cond in enumerate(conditions):
                     st.session_state[f"f_tbl_{i}"] = cond.get("table")
                     st.session_state[f"f_col_{i}"] = cond.get("col")
                     st.session_state[f"f_op_{i}"] = cond.get("op")
                     st.session_state[f"f_val_{i}"] = cond.get("val")
                 # 恢复黑名单
-                if "subject_blocklist" in cfg:
-                    st.session_state["subject_blocklist"] = cfg["subject_blocklist"]
+                if "subject_blocklist" in extraction_cfg:
+                    st.session_state["subject_blocklist"] = extraction_cfg[
+                        "subject_blocklist"
+                    ]
 
                 st.success(f"已加载配置：{selected_setup_name}")
                 st.rerun()
@@ -312,12 +320,12 @@ if submitted:
         st.error("配置名称不能为空。")
     else:
         # 组装当前配置
-        config = {
+        extraction_config = {
             "selected_tables": selected_tables,
             "table_columns_map": table_columns_map,
             "filters": filters_config,
             "subject_blocklist": subject_blocklist,
             "max_table_number": MAX_TABLE_NUMBER,
         }
-        save_setup_config(name, description_input or None, config)
+        save_extraction_config(name, description_input or None, extraction_config)
         st.success(f"配置 `{name}` 已保存 / 更新。")
