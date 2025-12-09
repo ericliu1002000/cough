@@ -4,3 +4,4 @@ sqlalchemy
 pymysql         # MySQL 的驱动
 python-dotenv   # 读取 .env
 streamlit
+cryptography
