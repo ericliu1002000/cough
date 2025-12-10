@@ -283,9 +283,9 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
                 # 加上 execution_options(timeout=30) 防止卡死
                 with engine.connect().execution_options(timeout=60) as conn:
                     df_result = pd.read_sql(sql, conn)
-                
+            
             st.success(f"查询成功！预览前 {len(df_result)} 行 (已限制 Limit 1000)。")
-            st.dataframe(df_result, use_container_width=True)
+            st.dataframe(df_result, width="stretch")
             
             # 只有当有数据时才显示下载
             if not df_result.empty:

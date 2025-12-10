@@ -534,7 +534,7 @@ def main() -> None:
             st.write(
                 f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
             )
-            st.dataframe(final_df, use_container_width=True)
+            st.dataframe(final_df, width="stretch")
 
             csv = final_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
@@ -609,7 +609,7 @@ def main() -> None:
                     values=val,
                     aggfunc=agg,
                 )
-                st.dataframe(pivot, use_container_width=True)
+                st.dataframe(pivot, width="stretch")
 
                 pivot_csv = pivot.to_csv().encode("utf-8-sig")
                 st.download_button(
@@ -685,7 +685,7 @@ def main() -> None:
                         .sort_values(by=row_field)
                         .reset_index(drop=True)
                     )
-                    st.dataframe(detail_df, use_container_width=True)
+                    st.dataframe(detail_df, width="stretch")
 
 if __name__ == "__main__":
     main()
