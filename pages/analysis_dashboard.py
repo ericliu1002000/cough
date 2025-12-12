@@ -4,8 +4,6 @@ from typing import Any, Dict, List
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-# [移除] 不再需要这个第三方库，避免布局 bug
-# from streamlit_plotly_events import plotly_events
 
 from settings import get_engine
 from utils import (
@@ -14,6 +12,9 @@ from utils import (
     load_table_metadata,
     build_sql,
 )
+
+# 引入我们新建的插件系统
+from analysis_methods import CALC_METHODS, AGG_METHODS
 
 # 设置页面基本信息
 st.set_page_config(page_title="分析仪表盘", layout="wide")
@@ -57,6 +58,7 @@ def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
 def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
     """
     核心逻辑：按顺序应用计算规则（二段配置）。
+    现在支持通过 analysis_methods 扩展的插件。
     """
     # 创建副本，以免修改 session_state 中的原始数据
     df_calc = df.copy()
@@ -65,7 +67,7 @@ def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
         try:
             name = rule['name']
             cols = rule['cols']
-            method = rule['method']
+            method_name = rule['method'] # 例如 "求和 (Sum)" 或 "相对于基线变化"
             
             # 1. 过滤掉不存在的列，防止报错
             valid_cols = [c for c in cols if c in df_calc.columns]
@@ -73,20 +75,17 @@ def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
             if not valid_cols:
                 continue
 
-            # 2. 强制将参与计算的列转换为数字类型
-            for col in valid_cols:
-                if not pd.api.types.is_numeric_dtype(df_calc[col]):
-                    df_calc[col] = pd.to_numeric(df_calc[col], errors='coerce')
+            # 2. 强制将参与计算的列转换为数字类型 (Clinical Data 处理铁律)
+            #    注意：这里我们对整个 subset 做转换，方便插件直接使用数值
+            subset = df_calc[valid_cols].apply(pd.to_numeric, errors='coerce')
 
-            # 3. 根据选择的方法进行行级运算 (axis=1)
-            if method == '求和 (Sum)':
-                df_calc[name] = df_calc[valid_cols].sum(axis=1, min_count=1)
-            elif method == '平均值 (Mean)':
-                df_calc[name] = df_calc[valid_cols].mean(axis=1)
-            elif method == '最大值 (Max)':
-                df_calc[name] = df_calc[valid_cols].max(axis=1)
-            elif method == '最小值 (Min)':
-                df_calc[name] = df_calc[valid_cols].min(axis=1)
+            # 3. 动态调用插件
+            if method_name in CALC_METHODS:
+                calc_func = CALC_METHODS[method_name]
+                # 将处理好的 subset 传给插件，插件返回一个 Series
+                df_calc[name] = calc_func(subset)
+            else:
+                st.warning(f"⚠️ 未找到计算插件: {method_name}，已跳过。")
                 
         except Exception as e:
             st.error(f"⚠️ 计算规则 `{rule['name']}` 执行失败: {e}")
@@ -100,12 +99,14 @@ def draw_spaghetti_chart(
     value_col: str,
     title: str,
     key: str,
+    agg_func: Any = None,  # [新增] 接收聚合函数
+    agg_name: str = "Mean" # [新增] 接收函数名称用于显示 label
 ) -> None:
     """
     绘制单个“透视单元格”的散点图（原 spaghetti chart）：
     - 纵轴: 受试者 ID (subj_col)
     - 横轴: 数值字段 (value_col)
-    - 统计量: 均值竖线标注。
+    - 统计量: 使用 agg_func 计算并绘制竖线（如果是数值结果）。
 
     使用 Streamlit 原生 on_select 事件处理点击交互。
     """
@@ -140,21 +141,28 @@ def draw_spaghetti_chart(
     # 显示数值标签
     fig.update_traces(text=tmp[value_col].round(2), textposition="middle right")
 
-    # 统计量计算：添加均值线
+    # [修复] 统计量计算：使用传入的 agg_func 而不是硬编码 mean
     series = tmp[value_col]
-    agg_value = series.mean()
-    try:
-        agg_x = float(agg_value)
-        fig.add_vline(
-            x=agg_x,
-            line_width=3,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"mean: {agg_x:.2f}",
-            annotation_position="top",
-        )
-    except Exception:
-        pass
+    
+    if agg_func:
+        try:
+            agg_value = agg_func(series)
+            
+            # 只有当聚合结果是数字时，才画参考线
+            # (如果选了 "Format: Mean(SD)" 这种返回字符串的，这里 float() 会报错，正好跳过不画)
+            agg_x = float(agg_value)
+            
+            fig.add_vline(
+                x=agg_x,
+                line_width=3,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"{agg_name}: {agg_x:.2f}",
+                annotation_position="top",
+            )
+        except Exception:
+            # 忽略无法转为数字的聚合结果（例如复合字符串）
+            pass
 
     fig.update_layout(
         title=title,
@@ -241,7 +249,7 @@ def main() -> None:
                     "index": [],
                     "columns": [],
                     "values": [],
-                    "agg": "mean",
+                    "agg": "Mean - 平均值",
                 }
             else:
                 # 兼容历史：仅规则列表
@@ -252,7 +260,7 @@ def main() -> None:
                     "index": [],
                     "columns": [],
                     "values": [],
-                    "agg": "mean",
+                    "agg": "Mean - 平均值",
                 }
 
         # 将 pivot_config 同步到对应的控件 key，确保默认值生效
@@ -260,7 +268,7 @@ def main() -> None:
         st.session_state["pivot_index"] = pivot_cfg.get("index", [])
         st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
         st.session_state["pivot_values"] = pivot_cfg.get("values", [])
-        st.session_state["pivot_agg"] = pivot_cfg.get("agg", "mean")
+        st.session_state["pivot_agg"] = pivot_cfg.get("agg", "Mean - 平均值")
 
         # 切换配置时，清空与数据结果相关的状态，避免串数据
         st.session_state.pop("raw_df", None)
@@ -292,7 +300,7 @@ def main() -> None:
                         "index": [],
                         "columns": [],
                         "values": [],
-                        "agg": "mean",
+                        "agg": "Mean - 平均值",
                     }
                 else:
                     # 兼容历史结构：直接存的是规则列表
@@ -303,7 +311,7 @@ def main() -> None:
                         "index": [],
                         "columns": [],
                         "values": [],
-                        "agg": "mean",
+                        "agg": "Mean - 平均值",
                     }
 
                 # 初始化 Session State（防止后续 Widget 报 key 不存在）
@@ -318,7 +326,7 @@ def main() -> None:
                         "index": [],
                         "columns": [],
                         "values": [],
-                        "agg": "mean",
+                        "agg": "Mean - 平均值",
                     }
 
                 # 同步 pivot_config 到控件 key
@@ -326,7 +334,7 @@ def main() -> None:
                 st.session_state["pivot_index"] = pivot_cfg.get("index", [])
                 st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
                 st.session_state["pivot_values"] = pivot_cfg.get("values", [])
-                st.session_state["pivot_agg"] = pivot_cfg.get("agg", "mean")
+                st.session_state["pivot_agg"] = pivot_cfg.get("agg", "Mean - 平均值")
                 
                 st.success(f"数据加载成功！共 {len(df_result)} 行。")
             else:
@@ -360,7 +368,7 @@ def main() -> None:
                 "index": [],
                 "columns": [],
                 "values": [],
-                "agg": "mean",
+                "agg": "Mean - 平均值",
             }
 
         # [A] 添加新规则的表单
@@ -376,7 +384,9 @@ def main() -> None:
             with c2:
                 target_cols = st.multiselect("参与计算的列", options=current_cols)
             with c3:
-                calc_method = st.selectbox("计算方式", ["求和 (Sum)", "平均值 (Mean)", "最大值 (Max)", "最小值 (Min)"])
+                # 动态获取所有可用的计算方法 (Row-wise)
+                calc_options = list(CALC_METHODS.keys())
+                calc_method = st.selectbox("计算方式", options=calc_options)
             with c4:
                 st.write("") # 占位，让按钮对齐底部
                 st.write("")
@@ -415,12 +425,9 @@ def main() -> None:
         st.markdown("##### 数据剔除规则")
         st.caption("在透视分析和绘图前剔除不需要的数据行，例如某些 ARM、VISIT 或特定受试者 ID。")
 
-        # 简化：当前版本支持「单字段、多取值」的一组剔除条件，
-        # 直接由下方两个控件实时映射到 exclusions，而不是通过额外按钮。
         with st.expander("配置剔除条件", expanded=True):
             excl_col1, excl_col2 = st.columns([2, 3])
 
-            # 计算默认字段与默认取值，优先使用已保存的 exclusions
             current_exclusions = st.session_state.get("exclusions", [])
             if current_exclusions:
                 cur_rule = current_exclusions[0]
@@ -451,14 +458,12 @@ def main() -> None:
                     .head(200)
                     .tolist()
                 )
-                # default 只在首次渲染时生效；这里的 default_values 来自已保存规则
                 excl_values = st.multiselect(
                     "要剔除的取值",
                     options=unique_vals,
                     default=default_values,
                 )
 
-            # 将当前选择实时映射为一条剔除规则写入 session_state["exclusions"]
             if excl_values:
                 st.session_state["exclusions"] = [
                     {
@@ -470,7 +475,6 @@ def main() -> None:
             else:
                 st.session_state["exclusions"] = []
 
-            # 预览当前将要生效的剔除条件
             if st.session_state["exclusions"]:
                 rule = st.session_state["exclusions"][0]
                 vals_preview = ", ".join(map(str, rule.get("values", [])))
@@ -481,7 +485,6 @@ def main() -> None:
         # [C-2] 备注信息（Note）
         st.markdown("##### 备注 (Note)")
         st.caption("用于记录本次二段配置的背景、假设或剔除逻辑，便于审计与追溯。")
-        # 仅使用 key 绑定 Session State，默认值来自 st.session_state['calc_note']
         st.text_area(
             "分析备注",
             key="calc_note",
@@ -489,7 +492,6 @@ def main() -> None:
             height=100,
         )
 
-        # 小提示，方便确认当前会被保存的剔除规则条数
         st.caption(f"当前剔除规则数量：{len(st.session_state['exclusions'])}")
 
         # 保存前，先刷新 pivot_config 与当前控件值保持一致
@@ -497,7 +499,7 @@ def main() -> None:
             "index": st.session_state.get("pivot_index", []),
             "columns": st.session_state.get("pivot_columns", []),
             "values": st.session_state.get("pivot_values", []),
-            "agg": st.session_state.get("pivot_agg", "mean"),
+            "agg": st.session_state.get("pivot_agg", "Mean - 平均值"),
         }
 
         # [D] 保存计算配置到数据库（规则 + 剔除 + 备注 + 透视配置）
@@ -519,8 +521,6 @@ def main() -> None:
             values = rule.get("values") or []
             if not field or field not in filtered_df.columns or not values:
                 continue
-            # 这里 values 来自界面 multiselect，已经是字符串
-            # 为避免类型问题，将比较双方统一为字符串
             mask = ~filtered_df[field].astype(str).isin([str(v) for v in values])
             filtered_df = filtered_df[mask]
 
@@ -556,7 +556,7 @@ def main() -> None:
         default_idx = [c for c in pivot_cfg.get("index", []) if c in all_columns]
         default_col = [c for c in pivot_cfg.get("columns", []) if c in all_columns]
         default_val = [c for c in pivot_cfg.get("values", []) if c in all_columns]
-        default_agg = pivot_cfg.get("agg", "mean")
+        default_agg = pivot_cfg.get("agg", "Mean - 平均值")
 
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -581,16 +581,15 @@ def main() -> None:
                 key="pivot_values",
             )
         with c4:
-            agg = st.selectbox(
-                "聚合函数",
-                ["mean", "sum", "count", "min", "max", "std"],
-                index=["mean", "sum", "count", "min", "max", "std"].index(
-                    default_agg
-                )
-                if default_agg in ["mean", "sum", "count", "min", "max", "std"]
-                else 0,
-                key="pivot_agg",
-            )
+            # 动态获取所有可用的聚合方法名称 (Aggregation)
+            agg_options = list(AGG_METHODS.keys())
+            
+            # 尝试恢复默认值
+            default_index = 0
+            if default_agg in agg_options:
+                default_index = agg_options.index(default_agg)
+                
+            agg_name = st.selectbox("聚合函数", agg_options, index=default_index, key="pivot_agg")
 
         if not (idx and col and val):
             st.info("👆 请先选择【行维度、列维度和值字段】之后，再进行透视和绘图。")
@@ -601,13 +600,16 @@ def main() -> None:
                 pivot_source = final_df.copy()
                 for v in val:
                     pivot_source[v] = pd.to_numeric(pivot_source[v], errors="coerce")
+                
+                # 获取实际的函数对象
+                actual_agg_func = AGG_METHODS.get(agg_name, "mean")
 
                 pivot = pd.pivot_table(
                     pivot_source,
                     index=idx or None,
                     columns=col or None,
                     values=val,
-                    aggfunc=agg,
+                    aggfunc=actual_agg_func,
                 )
                 st.dataframe(pivot, width="stretch")
 
@@ -667,12 +669,16 @@ def main() -> None:
                         
                         title = f"{row_field}={rv} | {col_field}={cv}"
                         key = f"cell_{row_field}_{rv}_{col_field}_{cv}"
+                        
+                        # [修复] 传递实际的聚合函数给绘图函数
                         draw_spaghetti_chart(
                             cell_df,
                             subj_col=subj_col,
                             value_col=value_field,
                             title=title,
                             key=key,
+                            agg_func=actual_agg_func, # 传入函数
+                            agg_name=agg_name         # 传入名称用于 Label
                         )
                         
                 # 若有选中的受试者，则在最底部展示其全程明细
