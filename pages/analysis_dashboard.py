@@ -2,7 +2,6 @@ import json
 from typing import Any, Dict, List
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
 from settings import get_engine
@@ -11,28 +10,31 @@ from utils import (
     fetch_setup_config,
     load_table_metadata,
     build_sql,
+    save_calculation_config
 )
 
-# 引入我们新建的插件系统
+# 引入插件系统
 from analysis_methods import CALC_METHODS, AGG_METHODS
+# 引入独立的图表组件 (请确保 cough/charts.py 已创建)
+from charts import draw_spaghetti_chart
 
-# 设置页面基本信息
 st.set_page_config(page_title="分析仪表盘", layout="wide")
 st.title("📊 分析仪表盘")
 
 
-def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
-    """
-    根据配置运行一次查询，返回生成的 SQL 和结果 DataFrame。
-    """
-    meta_data = load_table_metadata()
+# ==========================================
+# 核心逻辑层 (Core Logic)
+# ==========================================
 
+def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
+    """ETL层：生成SQL并获取原始数据"""
+    meta_data = load_table_metadata()
+    
     selected_tables = config.get("selected_tables", [])
     table_columns_map = config.get("table_columns_map", {})
     filters = config.get("filters", {})
     subject_blocklist = config.get("subject_blocklist", "")
 
-    # 调用 utils 中的核心逻辑生成 SQL
     sql = build_sql(
         selected_tables=selected_tables,
         table_columns_map=table_columns_map,
@@ -42,656 +44,486 @@ def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
     )
 
     if not sql:
-        st.error("无法根据当前配置生成 SQL。请检查配置内容。")
+        st.error("配置错误：无法生成有效 SQL。请检查选表或筛选条件。")
         return "", pd.DataFrame()
 
     engine = get_engine()
-    # 使用 spinner 提示用户正在查询
-    with st.spinner("正在执行数据库查询..."):
-        # 建议加上超时限制防止卡死，这里设为 60 秒
+    with st.spinner("正在查询数据库..."):
+        # 设置超时防止卡死
         with engine.connect().execution_options(timeout=60) as conn:
             df = pd.read_sql(sql, conn)
             
     return sql, df
 
 
+def apply_baseline_mapping(df: pd.DataFrame, config: Dict) -> pd.DataFrame:
+    """
+    [BDS 引擎] 基线变量映射
+    
+    功能：
+    将纵向数据 (Long Format) 中的基线行数值，横向广播到该受试者的每一行。
+    """
+    if not config or not isinstance(config, dict):
+        return df
+    
+    subj_col = config.get("subj_col")
+    visit_col = config.get("visit_col")
+    baseline_val = config.get("baseline_val")
+    target_cols = config.get("target_cols", [])
+
+    # 参数校验
+    if not (subj_col and visit_col and baseline_val and target_cols):
+        return df
+    
+    # 容错：确保所需列存在 (可能配置了但还没算出来)
+    available_targets = [c for c in target_cols if c in df.columns]
+    if not available_targets:
+        return df
+    if subj_col not in df.columns or visit_col not in df.columns:
+        return df
+
+    # 1. 提取基线子集
+    # 筛选出 Visit == Baseline 的行
+    bl_mask = df[visit_col].astype(str) == str(baseline_val)
+    bl_df = df.loc[bl_mask, [subj_col] + available_targets].copy()
+    
+    # 2. 重命名生成 _BL 后缀
+    rename_map = {col: f"{col}_BL" for col in available_targets}
+    bl_df = bl_df.rename(columns=rename_map)
+    
+    # 3. 去重 (确保每个受试者只有一行基线)
+    bl_df = bl_df.drop_duplicates(subset=[subj_col])
+
+    # 4. 合并回主表 (Left Join)
+    merged_df = pd.merge(df, bl_df, on=subj_col, how="left")
+    
+    return merged_df
+
+
 def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
     """
-    核心逻辑：按顺序应用计算规则（二段配置）。
-    现在支持通过 analysis_methods 扩展的插件。
+    [计算引擎] 执行计算规则
+    支持静默失败，以便支持两段式计算 (Two-Pass Calculation)。
     """
-    # 创建副本，以免修改 session_state 中的原始数据
     df_calc = df.copy()
     
     for rule in rules:
         try:
             name = rule['name']
             cols = rule['cols']
-            method_name = rule['method'] # 例如 "求和 (Sum)" 或 "相对于基线变化"
+            method_name = rule['method']
             
-            # 1. 过滤掉不存在的列，防止报错
+            # 验证列是否存在
             valid_cols = [c for c in cols if c in df_calc.columns]
             
-            if not valid_cols:
+            # 如果所需列不全（比如缺了基线列），在 Pass 1 阶段跳过，不报错
+            if len(valid_cols) < len(cols):
                 continue
 
-            # 2. 强制将参与计算的列转换为数字类型 (Clinical Data 处理铁律)
-            #    注意：这里我们对整个 subset 做转换，方便插件直接使用数值
+            # 强制转数值
             subset = df_calc[valid_cols].apply(pd.to_numeric, errors='coerce')
 
-            # 3. 动态调用插件
+            # 调用插件
             if method_name in CALC_METHODS:
                 calc_func = CALC_METHODS[method_name]
-                # 将处理好的 subset 传给插件，插件返回一个 Series
                 df_calc[name] = calc_func(subset)
             else:
-                st.warning(f"⚠️ 未找到计算插件: {method_name}，已跳过。")
+                # 只有找不到方法时才警告
+                st.warning(f"⚠️ 找不到计算方法: {method_name}")
                 
-        except Exception as e:
-            st.error(f"⚠️ 计算规则 `{rule['name']}` 执行失败: {e}")
+        except Exception:
+            # 静默失败，允许 Pass 2 重试
+            pass
             
     return df_calc
 
 
-def draw_spaghetti_chart(
-    df: pd.DataFrame,
-    subj_col: str,
-    value_col: str,
-    title: str,
-    key: str,
-    agg_func: Any = None,  # [新增] 接收聚合函数
-    agg_name: str = "Mean" # [新增] 接收函数名称用于显示 label
-) -> None:
-    """
-    绘制单个“透视单元格”的散点图（原 spaghetti chart）：
-    - 纵轴: 受试者 ID (subj_col)
-    - 横轴: 数值字段 (value_col)
-    - 统计量: 使用 agg_func 计算并绘制竖线（如果是数值结果）。
-
-    使用 Streamlit 原生 on_select 事件处理点击交互。
-    """
-    if df.empty:
-        st.info("该组合下无数据。")
-        return
-
-    if subj_col not in df.columns or value_col not in df.columns:
-        st.info("受试者 ID 或数值列在当前数据集中不存在。")
-        return
-
-    # 数据清洗
-    tmp = df[[subj_col, value_col]].copy()
-    tmp[value_col] = pd.to_numeric(tmp[value_col], errors="coerce")
-    tmp = tmp.dropna(subset=[value_col])
-    
-    if tmp.empty:
-        st.info("该组合下无有效数值数据。")
-        return
-    
-    # 绘图：个体点
-    fig = px.scatter(
-        tmp,
-        x=value_col,
-        y=subj_col,
-        opacity=0.6,
-        hover_data={subj_col: True, value_col: True},
-        # 【关键】将受试者ID放入 custom_data，以便在点击事件中精确获取
-        custom_data=[subj_col],
-    )
-
-    # 显示数值标签
-    fig.update_traces(text=tmp[value_col].round(2), textposition="middle right")
-
-    # [修复] 统计量计算：使用传入的 agg_func 而不是硬编码 mean
-    series = tmp[value_col]
-    
-    if agg_func:
-        try:
-            agg_value = agg_func(series)
-            
-            # 只有当聚合结果是数字时，才画参考线
-            # (如果选了 "Format: Mean(SD)" 这种返回字符串的，这里 float() 会报错，正好跳过不画)
-            agg_x = float(agg_value)
-            
-            fig.add_vline(
-                x=agg_x,
-                line_width=3,
-                line_dash="dash",
-                line_color="red",
-                annotation_text=f"{agg_name}: {agg_x:.2f}",
-                annotation_position="top",
-            )
-        except Exception:
-            # 忽略无法转为数字的聚合结果（例如复合字符串）
-            pass
-
-    fig.update_layout(
-        title=title,
-        xaxis_title=value_col,
-        yaxis_title=subj_col,
-        height=400, # 设定一个合理的高度
-        margin=dict(l=20, r=20, t=40, b=20),
-    )
-
-    # =========================================================
-    # 使用 Streamlit 原生交互：点击点后写入 session_state
-    # =========================================================
-    st.plotly_chart(
-        fig,
-        width="stretch",
-        on_select="rerun",       # 点击/选择后触发一次 rerun
-        selection_mode="points", # 支持点级选择
-        key=key,
-    )
-
-    # rerun 后，从 session_state[key] 中读取选中点信息
-    chart_state = st.session_state.get(key)
-    if chart_state is not None:
-        # 兼容对象属性或 dict 两种形式
-        selection = getattr(chart_state, "selection", None)
-        if selection is None and isinstance(chart_state, dict):
-            selection = chart_state.get("selection")
-
-        if selection and "points" in selection and selection["points"]:
-            clicked_point = selection["points"][0]
-            custom_data = clicked_point.get("customdata")
-            if custom_data:
-                selected_id = custom_data[0]
-            else:
-                # 降级方案：若 customdata 不存在，则取 y 值（本图中 y 轴即 ID）
-                selected_id = clicked_point.get("y")
-
-            if selected_id is not None:
-                st.session_state["selected_subject_id"] = selected_id
-
+# ==========================================
+# UI 表现层 (Main)
+# ==========================================
 
 def main() -> None:
-    # ===========================
-    # 1. 侧边栏：加载配置
-    # ===========================
+    # --- 1. 侧边栏：加载配置 ---
     with st.sidebar:
-        st.header("🧩 选择分析集")
+        st.header("🧩 分析集配置")
         setups = fetch_all_setups()
 
         if not setups:
-            st.info("暂无配置。请先在主页配置并保存数据集。")
+            st.info("暂无配置。请先去主页创建。")
             return
 
-        # 创建下拉菜单选项
         option_labels = [f"{row['setup_name']}" for row in setups]
         selected_label = st.selectbox("选择配置", options=option_labels)
         
-        # 找到对应的 setup 对象
-        selected_row = next(row for row in setups if row['setup_name'] == selected_label)
+        # 找到选中的配置对象
+        selected_row = next(r for r in setups if f"{r['setup_name']}" == selected_label)
         
         if selected_row.get("description"):
             st.info(f"📝 **备注**: {selected_row['description']}")
 
-    # ===========================
-    # 1.1 根据当前选择的 setup 预加载二段配置（规则 + note）
-    #     这样即使尚未点击「加载源数据」，备注也能回显。
-    # ===========================
+    # --- 1.1 状态管理与初始化 ---
+    # 检测配置是否切换，如果切换则重新加载二段配置
     if "current_setup_name" not in st.session_state:
         st.session_state["current_setup_name"] = selected_row["setup_name"]
-        need_reload_calc = True
+        need_reload = True
     else:
-        need_reload_calc = st.session_state["current_setup_name"] != selected_row["setup_name"]
+        need_reload = st.session_state["current_setup_name"] != selected_row["setup_name"]
 
-    if need_reload_calc:
+    if need_reload:
         st.session_state["current_setup_name"] = selected_row["setup_name"]
-        cfg_for_note = fetch_setup_config(selected_row["setup_name"])
-        if cfg_for_note:
-            calculation_cfg = cfg_for_note.get("calculation") or {}
-            if isinstance(calculation_cfg, dict):
-                st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
-                st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
-                st.session_state["exclusions"] = calculation_cfg.get("exclusions", []) or []
-                st.session_state["pivot_config"] = calculation_cfg.get("pivot", {}) or {
-                    "index": [],
-                    "columns": [],
-                    "values": [],
-                    "agg": "Mean - 平均值",
-                }
-            else:
-                # 兼容历史：仅规则列表
-                st.session_state["calc_rules"] = calculation_cfg or []
-                st.session_state["calc_note"] = ""
-                st.session_state["exclusions"] = []
-                st.session_state["pivot_config"] = {
-                    "index": [],
-                    "columns": [],
-                    "values": [],
-                    "agg": "Mean - 平均值",
-                }
+        
+        # 从数据库加载完整配置
+        cfg_pack = fetch_setup_config(selected_row["setup_name"]) or {}
+        calc_cfg = cfg_pack.get("calculation") or {}
+        
+        # 兼容旧版本数据结构
+        if isinstance(calc_cfg, list):
+            calc_cfg = {"calc_rules": calc_cfg}
+            
+        # 初始化 Session State
+        st.session_state["calc_rules"] = calc_cfg.get("calc_rules", [])
+        st.session_state["calc_note"] = calc_cfg.get("note", "")
+        st.session_state["exclusions"] = calc_cfg.get("exclusions", [])
+        st.session_state["pivot_config"] = calc_cfg.get("pivot", {})
+        st.session_state["baseline_config"] = calc_cfg.get("baseline", {}) # [新增] 基线配置
 
-        # 将 pivot_config 同步到对应的控件 key，确保默认值生效
-        pivot_cfg = st.session_state.get("pivot_config", {})
-        st.session_state["pivot_index"] = pivot_cfg.get("index", [])
-        st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
-        st.session_state["pivot_values"] = pivot_cfg.get("values", [])
-        st.session_state["pivot_agg"] = pivot_cfg.get("agg", "Mean - 平均值")
+        # 同步 UI 控件状态
+        p_cfg = st.session_state["pivot_config"]
+        st.session_state["pivot_index"] = p_cfg.get("index", [])
+        st.session_state["pivot_columns"] = p_cfg.get("columns", [])
+        st.session_state["pivot_values"] = p_cfg.get("values", [])
+        st.session_state["pivot_agg"] = p_cfg.get("agg", "Mean - 平均值")
 
-        # 切换配置时，清空与数据结果相关的状态，避免串数据
+        # 清空旧数据缓存
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
         st.session_state.pop("selected_subject_id", None)
 
-    # ===========================
-    # 2. 主区域：加载数据
-    # ===========================
-    # 只有点击按钮时才去数据库查询，避免每次刷新都查
+    # --- 2. 加载源数据 (Extraction) ---
     if st.button("🚀 加载源数据", type="primary"):
-        # 获取完整的配置（含一段/二段）
-        cfg_all = fetch_setup_config(selected_row["setup_name"])
-        if cfg_all:
-            extraction_cfg = cfg_all.get("extraction") or {}
-            calculation_cfg = cfg_all.get("calculation") or {}
-
-            sql, df_result = run_analysis(extraction_cfg)
-            if not df_result.empty:
-                # 将原始数据存入 Session State
-                st.session_state["raw_df"] = df_result
+        full_cfg = fetch_setup_config(selected_row["setup_name"])
+        if full_cfg and full_cfg.get("extraction"):
+            sql, df_res = run_analysis(full_cfg["extraction"])
+            if not df_res.empty:
+                st.session_state["raw_df"] = df_res
                 st.session_state["current_sql"] = sql
-                # 恢复二段配置（计算规则 + 备注）
-                if isinstance(calculation_cfg, dict):
-                    st.session_state["calc_rules"] = calculation_cfg.get("calc_rules", []) or []
-                    st.session_state["calc_note"] = calculation_cfg.get("note", "") or ""
-                    st.session_state["exclusions"] = calculation_cfg.get("exclusions", []) or []
-                    st.session_state["pivot_config"] = calculation_cfg.get("pivot", {}) or {
-                        "index": [],
-                        "columns": [],
-                        "values": [],
-                        "agg": "Mean - 平均值",
-                    }
-                else:
-                    # 兼容历史结构：直接存的是规则列表
-                    st.session_state["calc_rules"] = calculation_cfg or []
-                    st.session_state["calc_note"] = ""
-                    st.session_state["exclusions"] = []
-                    st.session_state["pivot_config"] = {
-                        "index": [],
-                        "columns": [],
-                        "values": [],
-                        "agg": "Mean - 平均值",
-                    }
-
-                # 初始化 Session State（防止后续 Widget 报 key 不存在）
-                if "calc_rules" not in st.session_state:
-                    st.session_state["calc_rules"] = []
-                if "calc_note" not in st.session_state:
-                    st.session_state["calc_note"] = ""
-                if "exclusions" not in st.session_state:
-                    st.session_state["exclusions"] = []
-                if "pivot_config" not in st.session_state:
-                    st.session_state["pivot_config"] = {
-                        "index": [],
-                        "columns": [],
-                        "values": [],
-                        "agg": "Mean - 平均值",
-                    }
-
-                # 同步 pivot_config 到控件 key
-                pivot_cfg = st.session_state.get("pivot_config", {})
-                st.session_state["pivot_index"] = pivot_cfg.get("index", [])
-                st.session_state["pivot_columns"] = pivot_cfg.get("columns", [])
-                st.session_state["pivot_values"] = pivot_cfg.get("values", [])
-                st.session_state["pivot_agg"] = pivot_cfg.get("agg", "Mean - 平均值")
-                
-                st.success(f"数据加载成功！共 {len(df_result)} 行。")
+                st.success(f"数据加载成功！共 {len(df_res)} 行。")
             else:
                 st.warning("查询结果为空。")
 
-    # ===========================
-    # 3. 数据处理与展示流水线
-    # ===========================
+    # --- 3. 数据处理流水线 (Pipeline) ---
     if "raw_df" in st.session_state:
         raw_df = st.session_state["raw_df"]
         
-        # 展示生成的 SQL (折叠)
-        with st.expander("查看原始 SQL 语句"):
+        # -------------------------------------------------------
+        # 【Pass 1: 预计算】
+        # 先算一遍衍生变量 (如 Total)，为了让基线配置能选到它们
+        # -------------------------------------------------------
+        df_pass1 = apply_calculations(raw_df, st.session_state["calc_rules"])
+        
+        # 此时 df_pass1 包含了 "总分" 列，但可能还没有 "Total_BL" 和 "Change"
+        all_cols_pass1 = list(df_pass1.columns)
+
+        with st.expander("查看原始 SQL"):
             st.code(st.session_state.get("current_sql", ""), language="sql")
+        
+        st.divider()
+
+        # ==========================================
+        # [Step A] 基线变量映射 (BDS Engine)
+        # ==========================================
+        st.subheader("🧬 基线变量映射 (BDS)")
+        st.caption("在此定义基线（支持选择刚刚计算出的衍生变量），系统会自动生成 `_BL` 后缀变量。")
+        
+        # 读取当前基线配置
+        bl_cfg = st.session_state.get("baseline_config", {})
+        
+        # UI 配置区
+        with st.expander("⚙️ 配置基线逻辑", expanded=not bool(bl_cfg)):
+            c1, c2, c3 = st.columns(3)
+            
+            # 智能猜测列名默认值
+            def_subj_idx = next((i for i, c in enumerate(all_cols_pass1) if "SUBJ" in c.upper()), 0)
+            def_visit_idx = next((i for i, c in enumerate(all_cols_pass1) if "VISIT" in c.upper() or "AVISIT" in c.upper()), 0)
+
+            with c1:
+                subj_col = st.selectbox("受试者 ID 列", all_cols_pass1, index=def_subj_idx, key="bl_subj_ui")
+            with c2:
+                visit_col = st.selectbox("访视/时间点列", all_cols_pass1, index=def_visit_idx, key="bl_visit_ui")
+            
+            # 动态获取访视列表
+            if visit_col and visit_col in df_pass1.columns:
+                unique_visits = sorted(df_pass1[visit_col].dropna().astype(str).unique().tolist())
+            else:
+                unique_visits = []
+                
+            with c3:
+                # 尝试恢复已保存的基线值
+                try:
+                    saved_bl_val = bl_cfg.get("baseline_val")
+                    bl_idx = unique_visits.index(saved_bl_val) if saved_bl_val in unique_visits else 0
+                except:
+                    bl_idx = 0
+                baseline_val = st.selectbox("哪一个访视是基线?", unique_visits, index=bl_idx, key="bl_val_ui")
+            
+            # 【关键】这里的 options 使用 all_cols_pass1，包含了 Pass 1 算出来的变量
+            target_cols = st.multiselect(
+                "选择数值变量 (生成 _BL 列)", 
+                options=all_cols_pass1,
+                default=[c for c in bl_cfg.get("target_cols", []) if c in all_cols_pass1],
+                key="bl_targets_ui"
+            )
+            
+            if st.button("✅ 应用基线配置"):
+                st.session_state["baseline_config"] = {
+                    "subj_col": subj_col,
+                    "visit_col": visit_col,
+                    "baseline_val": baseline_val,
+                    "target_cols": target_cols
+                }
+                st.rerun()
+
+        # 提示用户已生成的变量
+        if st.session_state.get("baseline_config"):
+            targets = st.session_state["baseline_config"].get("target_cols", [])
+            if targets:
+                new_cols_str = ", ".join([f"`{c}_BL`" for c in targets])
+                st.info(f"已生成基线变量：{new_cols_str}")
 
         st.divider()
-        
-        # --- 二段配置：衍生变量计算 ---
-        st.subheader("🧮 衍生变量计算 (二段配置)")
-        st.caption("在此处定义计算规则，例如：量表总分 = Q1 + Q2 + ...")
-        
-        # 确保规则列表、剔除规则、透视配置和备注字段存在
-        if "calc_rules" not in st.session_state:
-            st.session_state["calc_rules"] = []
-        if "calc_note" not in st.session_state:
-            st.session_state["calc_note"] = ""
-        if "exclusions" not in st.session_state:
-            st.session_state["exclusions"] = []
-        if "pivot_config" not in st.session_state:
-            st.session_state["pivot_config"] = {
-                "index": [],
-                "columns": [],
-                "values": [],
-                "agg": "Mean - 平均值",
-            }
 
-        # [A] 添加新规则的表单
+        # ==========================================
+        # [Step B] 衍生变量计算
+        # ==========================================
+        st.subheader("🧮 衍生变量计算")
+        
+        # -------------------------------------------------------
+        # 【模拟基线映射】
+        # 为了让“添加规则”UI 能选到 _BL 变量，我们需要先模拟跑一次映射
+        # -------------------------------------------------------
+        df_preview_bl = apply_baseline_mapping(df_pass1, st.session_state.get("baseline_config", {}))
+        
+        # 此时的可用列 = 原始 + Pass1变量 + 基线变量 + 已定义变量名
+        current_cols = list(df_preview_bl.columns) + [r['name'] for r in st.session_state["calc_rules"]]
+        
         with st.expander("➕ 添加新计算规则", expanded=True):
             c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
-            
-            # 关键：这里要让用户能选到“之前规则生成的新列”
-            # 我们做一次模拟推演，获取所有潜在的列名
-            current_cols = list(raw_df.columns) + [r['name'] for r in st.session_state["calc_rules"]]
-            
-            with c1:
-                new_col_name = st.text_input("新变量名", placeholder="例如: LCQ_Total")
-            with c2:
-                target_cols = st.multiselect("参与计算的列", options=current_cols)
-            with c3:
-                # 动态获取所有可用的计算方法 (Row-wise)
-                calc_options = list(CALC_METHODS.keys())
-                calc_method = st.selectbox("计算方式", options=calc_options)
+            with c1: 
+                new_name = st.text_input("新变量名", placeholder="例: Score_Change")
+            with c2: 
+                targets_sel = st.multiselect("参与计算的列", options=current_cols)
+            with c3: 
+                # 动态读取插件列表
+                method = st.selectbox("计算方式", options=list(CALC_METHODS.keys()))
             with c4:
-                st.write("") # 占位，让按钮对齐底部
+                st.write("")
                 st.write("")
                 if st.button("添加"):
-                    if new_col_name and target_cols:
-                        # 检查变量名是否重复
-                        if new_col_name in current_cols:
-                            st.error("变量名已存在，请换一个名字。")
-                        else:
-                            rule = {
-                                "name": new_col_name,
-                                "cols": target_cols,
-                                "method": calc_method
-                            }
-                            st.session_state["calc_rules"].append(rule)
-                            st.rerun() # 刷新页面以应用新规则
-                    else:
-                        st.error("请填写完整信息")
-
-        # [B] 展示和管理已有的规则
-        if st.session_state["calc_rules"]:
-            st.markdown("##### 已应用的计算流程：")
-            for i, rule in enumerate(st.session_state["calc_rules"]):
-                col1, col2 = st.columns([8, 1])
-                with col1:
-                    # 格式化显示：变量 = Method(列1, 列2...)
-                    cols_str = ", ".join(rule['cols'])
-                    if len(cols_str) > 80: cols_str = cols_str[:80] + "..."
-                    st.info(f"**Step {i+1}:** `{rule['name']}` = **{rule['method']}** ( {cols_str} )")
-                with col2:
-                    if st.button("🗑️", key=f"del_rule_{i}"):
-                        st.session_state["calc_rules"].pop(i)
+                    if new_name and targets_sel:
+                        st.session_state["calc_rules"].append({
+                            "name": new_name, 
+                            "cols": targets_sel, 
+                            "method": method
+                        })
                         st.rerun()
+                    else:
+                        st.error("请填写完整")
 
-        # [C-1] 数据剔除规则（Exclusions）
-        st.markdown("##### 数据剔除规则")
-        st.caption("在透视分析和绘图前剔除不需要的数据行，例如某些 ARM、VISIT 或特定受试者 ID。")
+        # 展示已配置规则
+        if st.session_state["calc_rules"]:
+            for i, rule in enumerate(st.session_state["calc_rules"]):
+                c1, c2 = st.columns([8, 1])
+                c1.markdown(f"**Step {i+1}:** `{rule['name']}` = **{rule['method']}** ( {', '.join(rule['cols'])} )")
+                if c2.button("🗑️", key=f"del_rule_{i}"):
+                    st.session_state["calc_rules"].pop(i)
+                    st.rerun()
 
-        with st.expander("配置剔除条件", expanded=True):
-            excl_col1, excl_col2 = st.columns([2, 3])
+        # ==========================================
+        # [Step C] 数据剔除 (Filters)
+        # ==========================================
+        st.divider()
+        st.markdown("##### 🗑️ 数据剔除规则")
+        st.caption("剔除不需要的行（如筛选失败的受试者）。")
 
-            current_exclusions = st.session_state.get("exclusions", [])
-            if current_exclusions:
-                cur_rule = current_exclusions[0]
-                default_field = cur_rule.get("field")
-                default_values = [str(v) for v in cur_rule.get("values", [])]
-            else:
-                default_field = None
-                default_values = []
-
-            all_cols = list(raw_df.columns)
-            with excl_col1:
-                # 根据默认字段计算 index
-                if default_field in all_cols:
-                    default_idx = all_cols.index(default_field)
+        with st.expander("配置剔除条件"):
+            ec1, ec2 = st.columns([2, 3])
+            
+            # 读取当前默认值
+            cur_excl = st.session_state.get("exclusions", [])
+            def_field = cur_excl[0]["field"] if cur_excl else (current_cols[0] if current_cols else None)
+            def_vals = cur_excl[0]["values"] if cur_excl else []
+            
+            with ec1:
+                # 尝试找到默认字段的索引
+                try: f_idx = current_cols.index(def_field) if def_field in current_cols else 0
+                except: f_idx = 0
+                excl_field = st.selectbox("字段名", current_cols, index=f_idx, key="ex_f")
+            
+            with ec2:
+                # 获取唯一值供选择
+                if excl_field and excl_field in df_preview_bl.columns:
+                    u_vals = df_preview_bl[excl_field].astype(str).unique().tolist()[:200]
+                    excl_values = st.multiselect("剔除值 (Not In)", u_vals, default=def_vals, key="ex_v")
                 else:
-                    default_idx = 0
-                excl_field = st.selectbox(
-                    "字段名",
-                    options=all_cols,
-                    index=default_idx,
-                )
-            with excl_col2:
-                unique_vals = (
-                    raw_df[excl_field]
-                    .dropna()
-                    .astype(str)
-                    .drop_duplicates()
-                    .head(200)
-                    .tolist()
-                )
-                excl_values = st.multiselect(
-                    "要剔除的取值",
-                    options=unique_vals,
-                    default=default_values,
-                )
+                    excl_values = []
 
+            # 自动保存剔除规则到 Session (简化版：只支持一条规则)
             if excl_values:
-                st.session_state["exclusions"] = [
-                    {
-                        "field": excl_field,
-                        "op": "NOT IN",
-                        "values": excl_values,
-                    }
-                ]
+                st.session_state["exclusions"] = [{"field": excl_field, "values": excl_values}]
             else:
                 st.session_state["exclusions"] = []
+                
+        if st.session_state.get("exclusions"):
+            r = st.session_state["exclusions"][0]
+            st.info(f"当前剔除: `{r['field']}` NOT IN {r['values']}")
 
-            if st.session_state["exclusions"]:
-                rule = st.session_state["exclusions"][0]
-                vals_preview = ", ".join(map(str, rule.get("values", [])))
-                if len(vals_preview) > 60:
-                    vals_preview = vals_preview[:60] + "..."
-                st.info(f"当前规则：`{rule.get('field')}` NOT IN ({vals_preview})")
+        # ==========================================
+        # [Step D] 备注与保存
+        # ==========================================
+        st.markdown("##### 📝 备注")
+        st.text_area("分析备注", key="calc_note", height=80)
 
-        # [C-2] 备注信息（Note）
-        st.markdown("##### 备注 (Note)")
-        st.caption("用于记录本次二段配置的背景、假设或剔除逻辑，便于审计与追溯。")
-        st.text_area(
-            "分析备注",
-            key="calc_note",
-            placeholder="例如：本次分析排除了基线访视；仅保留暴露期数据。",
-            height=100,
-        )
-
-        st.caption(f"当前剔除规则数量：{len(st.session_state['exclusions'])}")
-
-        # 保存前，先刷新 pivot_config 与当前控件值保持一致
-        st.session_state["pivot_config"] = {
-            "index": st.session_state.get("pivot_index", []),
-            "columns": st.session_state.get("pivot_columns", []),
-            "values": st.session_state.get("pivot_values", []),
-            "agg": st.session_state.get("pivot_agg", "Mean - 平均值"),
-        }
-
-        # [D] 保存计算配置到数据库（规则 + 剔除 + 备注 + 透视配置）
-        if st.button("💾 保存计算规则"):
-            from utils import save_calculation_config
-            calculation_payload = {
+        st.divider()
+        if st.button("💾 保存所有配置 (基线+计算+剔除+透视)"):
+            payload = {
+                "baseline": st.session_state.get("baseline_config", {}), # [保存] 基线配置
                 "calc_rules": st.session_state["calc_rules"],
                 "note": st.session_state.get("calc_note", ""),
                 "exclusions": st.session_state.get("exclusions", []),
-                "pivot": st.session_state.get("pivot_config", {}),
+                "pivot": {
+                    "index": st.session_state.get("pivot_index"),
+                    "columns": st.session_state.get("pivot_columns"),
+                    "values": st.session_state.get("pivot_values"),
+                    "agg": st.session_state.get("pivot_agg")
+                }
             }
-            save_calculation_config(selected_row["setup_name"], calculation_payload)
-            st.success("二段计算规则、剔除规则、透视配置和备注已保存。")
+            save_calculation_config(selected_row["setup_name"], payload)
+            st.success("✅ 配置已全部保存！")
 
-        # [E] 实时执行计算流水线：先应用剔除规则，再做衍生变量计算
-        filtered_df = raw_df.copy()
-        for rule in st.session_state["exclusions"]:
-            field = rule.get("field")
-            values = rule.get("values") or []
-            if not field or field not in filtered_df.columns or not values:
-                continue
-            mask = ~filtered_df[field].astype(str).isin([str(v) for v in values])
-            filtered_df = filtered_df[mask]
+        # =======================================================
+        # 【最终执行流水线 (The Sandwich Pipeline)】
+        # 1. 原始数据 -> 2. Pass1计算 -> 3. 基线映射 -> 4. 剔除 -> 5. Pass2计算
+        # =======================================================
+        
+        # Step 1: 原始数据
+        final_df = raw_df.copy()
+        
+        # Step 2: Pass 1 计算 (算出 Total 等)
+        # 此时关于 _BL 的计算会失败，但没关系，apply_calculations 会静默跳过
+        final_df = apply_calculations(final_df, st.session_state["calc_rules"])
+        
+        # Step 3: 基线映射 (生成 _BL 变量)
+        final_df = apply_baseline_mapping(final_df, st.session_state.get("baseline_config", {}))
+        
+        # Step 4: 剔除数据
+        if st.session_state.get("exclusions"):
+            for rule in st.session_state["exclusions"]:
+                f, vals = rule.get("field"), rule.get("values")
+                if f and f in final_df.columns and vals:
+                    # 执行 NOT IN 过滤
+                    final_df = final_df[~final_df[f].astype(str).isin([str(v) for v in vals])]
+        
+        # Step 5: Pass 2 计算 (算出 Change 等)
+        # 此时 _BL 变量已存在，之前失败的计算规则现在可以成功执行了
+        final_df = apply_calculations(final_df, st.session_state["calc_rules"])
 
-        final_df = apply_calculations(filtered_df, st.session_state["calc_rules"])
-
-        # --- 结果展示区 ---
+        # ==========================================
+        # [Step E] 透视分析 & 绘图
+        # ==========================================
         st.divider()
+        st.subheader("📊 透视分析")
 
-        # 先展示数据预览（默认折叠，避免占用过多空间）
-        with st.expander("📄 数据预览", expanded=False):
-            st.write(
-                f"原始列数: **{len(raw_df.columns)}** | 计算后列数: **{len(final_df.columns)}**"
-            )
-            st.dataframe(final_df, width="stretch")
+        # 数据预览
+        with st.expander("📄 最终数据预览"):
+            st.dataframe(final_df.head(100), use_container_width=True)
+            st.download_button("📥 下载最终数据", final_df.to_csv(index=False).encode("utf-8-sig"), "final_data.csv")
 
-            csv = final_df.to_csv(index=False).encode("utf-8-sig")
-            st.download_button(
-                label="📥 下载最终数据 (CSV)",
-                data=csv,
-                file_name="analysis_final.csv",
-                mime="text/csv",
-            )
-
-        # 紧接着展示透视分析区域
-        st.divider()
-        st.subheader("📊 透视分析 & 图表")
-
-        # 使用包含新变量的 final_df 进行透视
-        all_columns = list(final_df.columns)
-
-        # 读取当前透视配置，作为默认值
-        pivot_cfg = st.session_state.get("pivot_config", {})
-        default_idx = [c for c in pivot_cfg.get("index", []) if c in all_columns]
-        default_col = [c for c in pivot_cfg.get("columns", []) if c in all_columns]
-        default_val = [c for c in pivot_cfg.get("values", []) if c in all_columns]
-        default_agg = pivot_cfg.get("agg", "Mean - 平均值")
-
+        all_final_cols = list(final_df.columns)
+        
+        # 透视控件
         c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            idx = st.multiselect(
-                "行维度 (Index)",
-                options=all_columns,
-                default=default_idx,
-                key="pivot_index",
-            )
-        with c2:
-            col = st.multiselect(
-                "列维度 (Columns)",
-                options=all_columns,
-                default=default_col,
-                key="pivot_columns",
-            )
-        with c3:
-            val = st.multiselect(
-                "值字段 (Values)",
-                options=all_columns,
-                default=default_val,
-                key="pivot_values",
-            )
-        with c4:
-            # 动态获取所有可用的聚合方法名称 (Aggregation)
-            agg_options = list(AGG_METHODS.keys())
-            
-            # 尝试恢复默认值
-            default_index = 0
-            if default_agg in agg_options:
-                default_index = agg_options.index(default_agg)
-                
-            agg_name = st.selectbox("聚合函数", agg_options, index=default_index, key="pivot_agg")
+        with c1: 
+            idx = st.multiselect("行维度", all_final_cols, key="pivot_index")
+        with c2: 
+            col = st.multiselect("列维度", all_final_cols, key="pivot_columns")
+        with c3: 
+            val = st.multiselect("值字段", all_final_cols, key="pivot_values")
+        with c4: 
+            agg_name = st.selectbox("聚合函数", list(AGG_METHODS.keys()), key="pivot_agg")
 
-        if not (idx and col and val):
-            st.info("👆 请先选择【行维度、列维度和值字段】之后，再进行透视和绘图。")
-        else:
-            # 透视表
+        if idx and col and val:
             try:
-                # 在透视前，确保值字段列为数值类型
-                pivot_source = final_df.copy()
+                # 准备数据 (再次确保数值化，防止透视报错)
+                p_src = final_df.copy()
                 for v in val:
-                    pivot_source[v] = pd.to_numeric(pivot_source[v], errors="coerce")
+                    p_src[v] = pd.to_numeric(p_src[v], errors='coerce')
                 
-                # 获取实际的函数对象
-                actual_agg_func = AGG_METHODS.get(agg_name, "mean")
-
+                # 获取函数对象
+                actual_func = AGG_METHODS.get(agg_name, "mean")
+                
+                # 生成透视表
                 pivot = pd.pivot_table(
-                    pivot_source,
-                    index=idx or None,
-                    columns=col or None,
-                    values=val,
-                    aggfunc=actual_agg_func,
+                    p_src, index=idx, columns=col, values=val, 
+                    aggfunc=actual_func
                 )
-                st.dataframe(pivot, width="stretch")
+                st.dataframe(pivot, use_container_width=True)
+                
+                # 下载
+                st.download_button("📥 下载透视结果", pivot.to_csv().encode("utf-8-sig"), "pivot_table.csv")
 
-                pivot_csv = pivot.to_csv().encode("utf-8-sig")
-                st.download_button(
-                    label="📥 下载透视结果",
-                    data=pivot_csv,
-                    file_name="pivot_table.csv",
-                    mime="text/csv",
-                )
             except Exception as e:
                 st.error(f"透视表生成失败: {e}")
 
-            # 只有在行维度、列维度、值字段各选 1 个时，才绘制图表
+            # ==========================
+            # 绘图区域 (调用 charts.py)
+            # ==========================
+            # 只有在维度确定时才绘图
             if len(idx) == 1 and len(col) == 1 and len(val) == 1:
+                st.markdown("---")
+                st.subheader("📈 单元格分布图")
+                
                 row_field = idx[0]
                 col_field = col[0]
-                value_field = val[0]
+                val_field = val[0]
+                
+                # 智能选择 ID 列
+                def_id_idx = next((i for i, c in enumerate(all_final_cols) if "SUBJ" in c.upper()), 0)
+                subj_col = st.selectbox("受试者 ID 列 (用于绘图)", all_final_cols, index=def_id_idx)
 
-                st.markdown("----")
-                st.subheader("📈 透视单元格分布图")
-
-                # 选择受试者 ID 列
-                id_candidates = ["SUBJID","USUBJID", "SUBJECTID", "ID"]
-                default_id_idx = 0
-                for token in id_candidates:
-                    for i, c in enumerate(all_columns):
-                        if token in c.upper():
-                            default_id_idx = i
-                            break
-                    else:
-                        continue
-                    break
-
-                subj_col = st.selectbox(
-                    "受试者 ID 列",
-                    options=all_columns,
-                    index=default_id_idx,
-                )
-
-                # 行 / 列取值
-                row_values = (
-                    final_df[row_field].dropna().astype(str).drop_duplicates().tolist()
-                )
-                col_values = (
-                    final_df[col_field].dropna().astype(str).drop_duplicates().tolist()
-                )
-
-                # 一行一个图表：遍历行维度和列维度的笛卡尔积
-                for rv in row_values:
-                    for cv in col_values:
+                # 遍历绘制小图
+                row_vals = final_df[row_field].dropna().astype(str).drop_duplicates().tolist()
+                col_vals = final_df[col_field].dropna().astype(str).drop_duplicates().tolist()
+                
+                # 限制绘图数量，防止浏览器卡死
+                total_charts = len(row_vals) * len(col_vals)
+                if total_charts > 20:
+                    st.warning(f"⚠️ 图表数量过多 ({total_charts})，仅展示前 20 个。")
+                
+                count = 0
+                for rv in row_vals:
+                    for cv in col_vals:
+                        if count >= 20: break
                         
+                        # 提取单元格数据
                         cell_df = final_df[
-                            (final_df[row_field].astype(str) == rv)
-                            & (final_df[col_field].astype(str) == cv)
+                            (final_df[row_field].astype(str) == rv) & 
+                            (final_df[col_field].astype(str) == cv)
                         ]
                         
                         title = f"{row_field}={rv} | {col_field}={cv}"
-                        key = f"cell_{row_field}_{rv}_{col_field}_{cv}"
+                        key = f"chart_{rv}_{cv}"
                         
-                        # [修复] 传递实际的聚合函数给绘图函数
+                        # [重构] 调用外部组件
                         draw_spaghetti_chart(
-                            cell_df,
+                            df=cell_df,
                             subj_col=subj_col,
-                            value_col=value_field,
+                            value_col=val_field,
                             title=title,
                             key=key,
-                            agg_func=actual_agg_func, # 传入函数
-                            agg_name=agg_name         # 传入名称用于 Label
+                            agg_func=actual_func,
+                            agg_name=agg_name
                         )
-                        
-                # 若有选中的受试者，则在最底部展示其全程明细
-                subj_id = st.session_state.get("selected_subject_id")
-                if subj_id is not None:
-                    st.markdown("----")
-                    st.subheader(f"🔍 受试者 {subj_id} 全程明细")
-                    detail_df = (
-                        final_df[final_df[subj_col] == subj_id]
-                        .sort_values(by=row_field)
-                        .reset_index(drop=True)
-                    )
-                    st.dataframe(detail_df, width="stretch")
+                        count += 1
 
 if __name__ == "__main__":
     main()

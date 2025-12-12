@@ -6,5 +6,4 @@ python-dotenv   # 读取 .env
 streamlit
 cryptography
 plotly==6.4.0
-
-rpy2
+scipy

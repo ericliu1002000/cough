@@ -274,3 +274,37 @@ def calc_ratio(df_subset: pd.DataFrame) -> pd.Series:
     with np.errstate(divide='ignore', invalid='ignore'):
         res = num / denom
     return res.replace([np.inf, -np.inf], np.nan)
+
+
+from scipy import stats
+
+def calculate_anova_f_test(df, group_col, value_col):
+    """
+    计算单因素方差分析 (One-Way ANOVA)   F值  P值
+    输入:
+        df: 包含所有组数据的 DataFrame
+        group_col: 分组列 (如 'ARM')
+        value_col: 数值列 (如 'LCQ_Baseline')
+    输出:
+        F-value, P-value
+    """
+    # 1. 数据清洗
+    clean_df = df.dropna(subset=[group_col, value_col])
+    
+    # 2. 按组提取数据列表 [[1,2,3], [4,5,6], ...]
+    groups = []
+    all_group_names = clean_df[group_col].unique()
+    
+    if len(all_group_names) < 2:
+        return None, None # 只有一组无法比较
+        
+    for g_name in all_group_names:
+        group_data = clean_df[clean_df[group_col] == g_name][value_col].values
+        groups.append(group_data)
+        
+    # 3. 调用 scipy 计算
+    try:
+        f_stat, p_val = stats.f_oneway(*groups)
+        return f_stat, p_val
+    except Exception:
+        return None, None
