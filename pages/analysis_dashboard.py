@@ -526,5 +526,13 @@ def main() -> None:
                     else:
                         st.info(f"当前数据中不存在受试者列 `{subj_col}`，无法展示明细。")
 
+                    # 提供跳转到受试者档案页面的入口
+                    if st.button("🔍 查看该受试者的跨表档案", key="btn_subject_profile"):
+                        st.session_state["selected_subject_id"] = selected_id
+                        try:
+                            st.switch_page("pages/subject_profile.py")
+                        except Exception:
+                            st.info("请在左侧页面列表中打开“受试者档案”页面。")
+
 if __name__ == "__main__":
     main()
