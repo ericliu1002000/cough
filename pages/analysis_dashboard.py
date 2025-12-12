@@ -498,12 +498,33 @@ def main() -> None:
                 
                 for rv in row_vals:
                     for cv in col_vals:
-                        if count >= 20: break
-                        cell = final_df[(final_df[idx[0]].astype(str)==rv) & (final_df[col[0]].astype(str)==cv)]
+                        if count >= 20:
+                            break
+                        cell = final_df[
+                            (final_df[idx[0]].astype(str) == rv)
+                            & (final_df[col[0]].astype(str) == cv)
+                        ]
                         draw_spaghetti_chart(
                             cell, subj_col, val[0], f"{rv} | {cv}", f"c_{rv}_{cv}", actual_func, agg
                         )
                         count += 1
+
+                # 4. 点击散点后展示选中受试者的完整明细
+                selected_id = st.session_state.get("selected_subject_id")
+                if selected_id is not None:
+                    st.markdown("---")
+                    st.subheader(f"📄 受试者明细：{selected_id}")
+
+                    if subj_col in final_df.columns:
+                        subj_df = final_df[
+                            final_df[subj_col].astype(str) == str(selected_id)
+                        ]
+                        if subj_df.empty:
+                            st.info("当前数据集中未找到该受试者的记录。")
+                        else:
+                            st.dataframe(subj_df, use_container_width=True)
+                    else:
+                        st.info(f"当前数据中不存在受试者列 `{subj_col}`，无法展示明细。")
 
 if __name__ == "__main__":
     main()
