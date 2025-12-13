@@ -238,15 +238,20 @@ def main() -> None:
         st.session_state["baseline_config"] = calc_cfg.get("baseline", {}) 
 
         p_cfg = st.session_state["pivot_config"]
-        # 兼容历史数据：早期版本可能使用简单字符串 'mean' 作为聚合函数名
-        raw_agg = p_cfg.get("agg", "Mean - 平均值")
-        if raw_agg == "mean":
-            raw_agg = "Mean - 平均值"
+        # 兼容历史数据：早期版本可能使用简单字符串 'mean' 作为聚合函数名，
+        # 现在统一为聚合函数名称列表。
+        raw_agg = p_cfg.get("agg", ["Mean - 平均值"])
+        if isinstance(raw_agg, str):
+            if raw_agg == "mean":
+                raw_agg = "Mean - 平均值"
+            raw_aggs = [raw_agg]
+        else:
+            raw_aggs = list(raw_agg)
 
         st.session_state["pivot_index"] = p_cfg.get("index", [])
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
         st.session_state["pivot_values"] = p_cfg.get("values", [])
-        st.session_state["pivot_agg"] = raw_agg
+        st.session_state["pivot_aggs"] = raw_aggs
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -430,7 +435,7 @@ def main() -> None:
                     "index": st.session_state.get("pivot_index", []),
                     "columns": st.session_state.get("pivot_columns", []),
                     "values": st.session_state.get("pivot_values", []),
-                    "agg": st.session_state.get("pivot_agg", "Mean - 平均值"),
+                    "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
                 },
             }
             save_calculation_config(selected_row["setup_name"], payload)
@@ -467,21 +472,51 @@ def main() -> None:
         all_final_cols = list(final_df.columns)
         
         c1, c2, c3, c4 = st.columns(4)
-        with c1: idx = st.multiselect("行维度 (如 Visit)", all_final_cols, key="pivot_index")
-        with c2: col = st.multiselect("列维度 (如 Group)", all_final_cols, key="pivot_columns")
-        with c3: val = st.multiselect("值字段 (如 Score)", all_final_cols, key="pivot_values")
-        with c4: agg = st.selectbox("聚合函数", list(AGG_METHODS.keys()), key="pivot_agg")
+        with c1:
+            idx = st.multiselect("行维度 (如 Visit)", all_final_cols, key="pivot_index")
+        with c2:
+            col = st.multiselect("列维度 (如 Group)", all_final_cols, key="pivot_columns")
+        with c3:
+            val = st.multiselect("值字段 (如 Score)", all_final_cols, key="pivot_values")
+        with c4:
+            agg_options = list(AGG_METHODS.keys())
+            default_aggs = [
+                a for a in st.session_state.get("pivot_aggs", ["Mean - 平均值"])
+                if a in agg_options
+            ]
+            if not default_aggs:
+                default_aggs = ["Mean - 平均值"]
+            aggs = st.multiselect(
+                "聚合函数（可多选）",
+                agg_options,
+                default=default_aggs,
+                key="pivot_aggs",
+            )
 
-        if idx and col and val:
+        if idx and col and val and aggs:
             # 1. 透视表
             try:
                 p_src = final_df.copy()
-                for v in val: p_src[v] = pd.to_numeric(p_src[v], errors='coerce')
-                
-                actual_func = AGG_METHODS.get(agg, "mean")
-                pivot = pd.pivot_table(p_src, index=idx, columns=col, values=val, aggfunc=actual_func)
+                for v in val:
+                    p_src[v] = pd.to_numeric(p_src[v], errors="coerce")
+
+                # 为每个值字段指定一组聚合函数，支持多聚合
+                aggfunc_map = {
+                    v: [AGG_METHODS.get(a, "mean") for a in aggs] for v in val
+                }
+                pivot = pd.pivot_table(
+                    p_src,
+                    index=idx,
+                    columns=col,
+                    values=val,
+                    aggfunc=aggfunc_map,
+                )
                 st.dataframe(pivot, use_container_width=True)
-                st.download_button("📥 下载透视表", pivot.to_csv().encode("utf-8-sig"), "pivot_table.csv")
+                st.download_button(
+                    "📥 下载透视表",
+                    pivot.to_csv().encode("utf-8-sig"),
+                    "pivot_table_multi_agg.csv",
+                )
             except Exception as e:
                 st.error(f"透视失败: {e}")
 
@@ -563,6 +598,9 @@ def main() -> None:
                             "ID 列 (用于绘图)", all_final_cols, index=def_id_idx
                         )
                         value_col = val[0]
+                        # 绘图使用的聚合函数：取多选聚合函数中的第一个作为参考线
+                        primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
+                        actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
 
                     for i, rk in enumerate(row_keys):
                         for j, ck in enumerate(col_keys):
@@ -593,8 +631,8 @@ def main() -> None:
                                 value_col,
                                 title,
                                 f"c_{key_suffix}",
-                                actual_func,
-                                agg,
+                                actual_func_for_plot,
+                                primary_agg_name,
                             )
                             count += 1
 
