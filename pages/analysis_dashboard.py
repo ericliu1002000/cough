@@ -17,7 +17,7 @@ from utils import (
 # 引入插件系统
 from analysis_methods import CALC_METHODS, AGG_METHODS
 # 引入独立的图表组件
-from charts import draw_spaghetti_chart
+from charts import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
 
 st.set_page_config(page_title="分析仪表盘", layout="wide")
 st.title("📊 分析仪表盘")
@@ -545,6 +545,9 @@ def main() -> None:
                     # 预留一个位置用于显示“已生成 X 个图表（时间）”的提示
                     charts_info_placeholder = st.empty()
 
+                    # 收集当前页面实际绘制的所有图表，用于 HTML 导出
+                    all_figs: list[tuple[str, Any]] = []
+
                     # 计算行维度和列维度的所有组合键（多维）
                     row_key_cols = idx
                     col_key_cols = col
@@ -602,7 +605,22 @@ def main() -> None:
                         primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
                         actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
 
+                    # 为每个行组合分配一个固定颜色，使同一行组合下不同列维度的图表颜色一致
+                    color_palette = [
+                        "#1f77b4",
+                        "#ff7f0e",
+                        "#2ca02c",
+                        "#d62728",
+                        "#9467bd",
+                        "#8c564b",
+                        "#e377c2",
+                        "#7f7f7f",
+                        "#bcbd22",
+                        "#17becf",
+                    ]
+
                     for i, rk in enumerate(row_keys):
+                        group_color = color_palette[i % len(color_palette)]
                         for j, ck in enumerate(col_keys):
                             if count >= limit:
                                 break
@@ -625,15 +643,20 @@ def main() -> None:
                             title = f"{row_title} | {col_title}"
                             key_suffix = f"r{i}_c{j}"
 
-                            draw_spaghetti_chart(
-                                cell,
-                                subj_col,
-                                value_col,
-                                title,
-                                f"c_{key_suffix}",
-                                actual_func_for_plot,
-                                primary_agg_name,
+                            fig = build_spaghetti_fig(
+                                df=cell,
+                                subj_col=subj_col,
+                                value_col=value_col,
+                                title=title,
+                                agg_func=actual_func_for_plot,
+                                agg_name=primary_agg_name,
+                                marker_color=group_color,
                             )
+                            if fig is None:
+                                continue
+
+                            render_spaghetti_fig(fig, key=f"c_{key_suffix}")
+                            all_figs.append((title, fig))
                             count += 1
 
                     # 在图表区域顶部给出生成数量和时间提示
@@ -644,7 +667,34 @@ def main() -> None:
                         f"已为您生成 {count} 个图表（{ts})"
                     )
 
-                    # 4. 点击散点后展示选中受试者的完整明细
+                    # 4. 一键导出当前所有图表为 HTML
+                    if count > 0 and all_figs:
+                        if st.button("📥 下载所有图表 (HTML)", key="btn_export_charts"):
+                            html_blocks: list[str] = []
+                            for title, fig in all_figs:
+                                fig_html = fig.to_html(
+                                    full_html=False, include_plotlyjs=False
+                                )
+                                html_blocks.append(f"<h3>{title}</h3>\n{fig_html}")
+
+                            full_html = (
+                                "<html><head>"
+                                "<meta charset='utf-8' />"
+                                "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
+                                "</head><body>"
+                                + "\n<hr/>\n".join(html_blocks)
+                                + "</body></html>"
+                            )
+
+                            st.download_button(
+                                "⬇️ 保存为 HTML 文件",
+                                data=full_html.encode("utf-8"),
+                                file_name="all_charts.html",
+                                mime="text/html",
+                                key="btn_export_charts_download",
+                            )
+
+                    # 5. 点击散点后展示选中受试者的完整明细
                     selected_id = st.session_state.get("selected_subject_id")
                     if selected_id is not None:
                         st.markdown("---")
