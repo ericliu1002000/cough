@@ -2,6 +2,7 @@ import json
 from typing import Any, Dict, List
 
 import pandas as pd
+import copy
 import streamlit as st
 from scipy import stats  # 用于计算 ANOVA
 
@@ -655,6 +656,14 @@ def main() -> None:
                             if fig is None:
                                 continue
 
+                            # -------------------------------------------------------
+                            # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
+                            # -------------------------------------------------------
+                            # 在 render 之前，先克隆一份“干净”的 Figure 用于导出。
+                            # 这样无论 st.plotly_chart 对 fig 做了什么(如注入JS回调)，
+                            # 导出用的 fig_for_export 永远是纯净的。
+                            fig_for_export = copy.deepcopy(fig)
+
                             render_spaghetti_fig(fig, key=f"c_{key_suffix}")
                             all_figs.append((title, fig))
                             count += 1
@@ -671,6 +680,23 @@ def main() -> None:
                     if count > 0 and all_figs:
                         if st.button("📥 下载所有图表 (HTML)", key="btn_export_charts"):
                             html_blocks: list[str] = []
+
+                            # 【DEBUG START】 打印第一张图的 X 轴数据，看看是数值还是下标
+                            if all_figs:
+                                first_fig = all_figs[0][1]
+                                # 尝试获取 X 轴数据（通常在 data[0].x）
+                                try:
+                                    x_sample = first_fig.data[0].x
+                                    print(f"--- [DEBUG] Export Check ---")
+                                    print(f"First Chart Title: {all_figs[0][0]}")
+                                    print(f"X Data Type: {type(x_sample)}")
+                                    # 打印前 10 个值
+                                    print(f"X Data Sample: {list(x_sample)[:10] if hasattr(x_sample, '__iter__') else x_sample}")
+                                    print(f"----------------------------")
+                                except Exception as e:
+                                    print(f"--- [DEBUG] Error reading x data: {e} ---")
+                            # 【DEBUG END】
+
                             for title, fig in all_figs:
                                 fig_html = fig.to_html(
                                     full_html=False, include_plotlyjs=False
