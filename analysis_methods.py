@@ -91,7 +91,7 @@ def agg_sd_atomic(series: pd.Series) -> float:
     # ddof=1 对应样本标准差，符合 FDA/SAS 标准 (Excel STDEV.S)
     return pd.to_numeric(series, errors='coerce').std(ddof=1)
 
-@register_agg_method("SE - 标准误")
+@register_agg_method("SEM - 标准误")
 def agg_se_atomic(series: pd.Series) -> float:
     """标准误 (Standard Error of Mean = SD / sqrt(n))"""
     s = pd.to_numeric(series, errors='coerce').dropna()
@@ -113,9 +113,6 @@ def agg_q3_atomic(series: pd.Series) -> float:
     """第三四分位数"""
     return sas_quantile(series, 0.75)
 
-@register_agg_method('Median(Q1,Q3)-三段中位数')
-def agg_median_q1_q3_method(series: pd.Series) -> str:
-    return f"{agg_median_atomic(series):.3f}({agg_q1_atomic(series):.3f},{agg_q3_atomic(series):.3f})"
 
 @register_agg_method("Min - 最小值")
 def agg_min_atomic(series: pd.Series) -> float:
@@ -125,9 +122,7 @@ def agg_min_atomic(series: pd.Series) -> float:
 def agg_max_atomic(series: pd.Series) -> float:
     return pd.to_numeric(series, errors='coerce').max()
 
-@register_agg_method("min-max-(最小，最大值)")
-def agg_min_max_atomic(series: pd.Series) -> str:
-    return f"{agg_min_atomic(series):.3f},{agg_max_atomic(series):.3f}"
+
 
 @register_agg_method("GeoMean - 几何均值")
 def agg_geo_mean(series: pd.Series) -> float:
@@ -175,7 +170,16 @@ def agg_fmt_mean_se(series: pd.Series) -> str:
     se = s.std(ddof=1) / np.sqrt(len(s))
     return f"{m:.3f}({se:.3f})"
 
-@register_agg_method("Format: Median (Q1, Q3) - 中位数(四分位)")
+@register_agg_method("Format: Min, Max - 范围")
+def agg_fmt_min_max(series: pd.Series) -> str:
+    """格式: 3.536, 16.714"""
+    s = pd.to_numeric(series, errors='coerce').dropna()
+    if s.empty: return "NaN"
+    return f"{s.min():.3f}, {s.max():.3f}"
+
+# --- 3.2 组合统计量，返回数字  ---
+
+@register_agg_method("组合统计：: Median (Q1, Q3) - 中位数(四分位)")
 def agg_fmt_median_q1q3(series: pd.Series) -> str:
     """格式: 11.143(8.179, 12.857)"""
     try:
@@ -186,24 +190,24 @@ def agg_fmt_median_q1q3(series: pd.Series) -> str:
         return f"{med:.3f}({q1:.3f}, {q3:.3f})"
     except:
         return "Error"
-
-@register_agg_method("Format: Min, Max - 范围")
-def agg_fmt_min_max(series: pd.Series) -> str:
-    """格式: 3.536, 16.714"""
-    s = pd.to_numeric(series, errors='coerce').dropna()
-    if s.empty: return "NaN"
-    return f"{s.min():.3f}, {s.max():.3f}"
-
-@register_agg_method("Format: n (%) - 计数(百分比)")
-def agg_fmt_n_percent(series: pd.Series) -> str:
-    """
-    注意：此函数在透视表中计算百分比比较困难，
-    因为透视表只知道当前单元格的数据，不知道列总数 (Denominator)。
-    这里仅返回计数，百分比通常需要专门的 Frequency Table 逻辑。
-    暂返回: Count
-    """
-    n = pd.to_numeric(series, errors='coerce').count()
-    return f"{n}"
+    
+@register_agg_method("组合统计：全量指标统计")
+def agg_fmt_all(series: pd.Series) -> str:
+    try:
+        return (
+            f"N值：{agg_n(series)}\n"
+            f"空值-未填写：{agg_missing(series):.3f}\n"
+            f"最大-最小值：{agg_fmt_min_max(series)}\n"
+            f"中位数 Median(Q1,Q3)：{agg_fmt_median_q1q3(series)}\n"
+            f"平均值：{agg_mean_atomic(series):.3f}\n"
+            f"标准误SEM：{agg_se_atomic(series):.3f}\n"
+            f"标准差SD：{agg_sd_atomic(series):.3f}\n"
+            f"几何平均数：{agg_geo_mean(series):.3f}\n"
+            f"CV 变异系数：{agg_cv_percent(series):.3f}\n"
+        )
+    except Exception as e:
+        print("agg_fmt_all failed:", repr(e))
+        return f"Error: {type(e).__name__}: {e}"
 
 # ==========================================
 # 4. 行级计算插件 (Row-wise Transformation)

@@ -238,10 +238,15 @@ def main() -> None:
         st.session_state["baseline_config"] = calc_cfg.get("baseline", {}) 
 
         p_cfg = st.session_state["pivot_config"]
+        # 兼容历史数据：早期版本可能使用简单字符串 'mean' 作为聚合函数名
+        raw_agg = p_cfg.get("agg", "Mean - 平均值")
+        if raw_agg == "mean":
+            raw_agg = "Mean - 平均值"
+
         st.session_state["pivot_index"] = p_cfg.get("index", [])
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
         st.session_state["pivot_values"] = p_cfg.get("values", [])
-        st.session_state["pivot_agg"] = p_cfg.get("agg", "Mean - 平均值")
+        st.session_state["pivot_agg"] = raw_agg
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -264,16 +269,28 @@ def main() -> None:
         raw_df = st.session_state["raw_df"]
         
         # -------------------------------------------------------
+        # 【Step 2】原始 SQL + 原始数据清单预览
+        # -------------------------------------------------------
+        with st.expander("查看原始 SQL"):
+            st.code(st.session_state.get("current_sql", ""), language="sql")
+
+        # 原始数据预览：展示完整数据清单（几百行级别）
+        with st.expander("📄 原始数据预览（查询结果）", expanded=False):
+            st.dataframe(raw_df, use_container_width=True)
+            st.download_button(
+                "📥 下载原始数据",
+                raw_df.to_csv(index=False).encode("utf-8-sig"),
+                "raw_data.csv",
+            )
+
+        st.divider()
+
+        # -------------------------------------------------------
         # 【Pass 1: 预计算】
         # 先算一遍衍生变量 (如 Total)，为了让基线配置能选到它们
         # -------------------------------------------------------
         df_pass1 = apply_calculations(raw_df, st.session_state["calc_rules"])
         all_cols_pass1 = list(df_pass1.columns)
-
-        with st.expander("查看原始 SQL"):
-            st.code(st.session_state.get("current_sql", ""), language="sql")
-        
-        st.divider()
 
         # ==========================================
         # [Step A] 基线变量映射 (BDS Engine)
@@ -397,7 +414,7 @@ def main() -> None:
             st.info(f"当前剔除: `{r['field']}` NOT IN {r['values']}")
 
         # ==========================================
-        # [Step D] 保存
+        # [Step D] 备注 & 保存配置
         # ==========================================
         st.markdown("##### 📝 备注")
         st.text_area("分析备注", key="calc_note", height=80)
@@ -406,15 +423,15 @@ def main() -> None:
         if st.button("💾 保存所有配置"):
             payload = {
                 "baseline": st.session_state.get("baseline_config", {}),
-                "calc_rules": st.session_state["calc_rules"],
+                "calc_rules": st.session_state.get("calc_rules", []),
                 "note": st.session_state.get("calc_note", ""),
                 "exclusions": st.session_state.get("exclusions", []),
                 "pivot": {
-                    "index": st.session_state.get("pivot_index"),
-                    "columns": st.session_state.get("pivot_columns"),
-                    "values": st.session_state.get("pivot_values"),
-                    "agg": st.session_state.get("pivot_agg")
-                }
+                    "index": st.session_state.get("pivot_index", []),
+                    "columns": st.session_state.get("pivot_columns", []),
+                    "values": st.session_state.get("pivot_values", []),
+                    "agg": st.session_state.get("pivot_agg", "Mean - 平均值"),
+                },
             }
             save_calculation_config(selected_row["setup_name"], payload)
             st.success("配置已保存！")
@@ -482,57 +499,141 @@ def main() -> None:
                 )
                 st.dataframe(anova_df, use_container_width=True)
 
-            # 3. 绘图
-            if len(idx) == 1 and len(col) == 1 and len(val) == 1:
-                st.markdown("---")
-                st.subheader("📈 单元格分布图")
-                row_vals = final_df[idx[0]].dropna().astype(str).drop_duplicates().tolist()
-                col_vals = final_df[col[0]].dropna().astype(str).drop_duplicates().tolist()
-                
-                if len(row_vals) * len(col_vals) > 20:
-                    st.warning("⚠️ 图表过多，仅展示前 20 个。")
-                
-                count = 0
-                def_id_idx = next((i for i, c in enumerate(all_final_cols) if "SUBJ" in c.upper()), 0)
-                subj_col = st.selectbox("ID 列 (用于绘图)", all_final_cols, index=def_id_idx)
-                
-                for rv in row_vals:
-                    for cv in col_vals:
-                        if count >= 20:
-                            break
-                        cell = final_df[
-                            (final_df[idx[0]].astype(str) == rv)
-                            & (final_df[col[0]].astype(str) == cv)
-                        ]
-                        draw_spaghetti_chart(
-                            cell, subj_col, val[0], f"{rv} | {cv}", f"c_{rv}_{cv}", actual_func, agg
-                        )
-                        count += 1
-
-                # 4. 点击散点后展示选中受试者的完整明细
-                selected_id = st.session_state.get("selected_subject_id")
-                if selected_id is not None:
+            # 3. 绘图（支持多行维度 / 多列维度，按迪卡尔积生成单元格）
+            if val:
+                if len(val) > 1:
+                    st.info("当前图表仅支持单一值字段绘图，请在“值字段”中只选择一个。")
+                else:
                     st.markdown("---")
-                    st.subheader(f"📄 受试者明细：{selected_id}")
+                    st.subheader("📈 单元格分布图")
 
-                    if subj_col in final_df.columns:
-                        subj_df = final_df[
-                            final_df[subj_col].astype(str) == str(selected_id)
-                        ]
-                        if subj_df.empty:
-                            st.info("当前数据集中未找到该受试者的记录。")
-                        else:
-                            st.dataframe(subj_df, use_container_width=True)
+                    # 预留一个位置用于显示“已生成 X 个图表（时间）”的提示
+                    charts_info_placeholder = st.empty()
+
+                    # 计算行维度和列维度的所有组合键（多维）
+                    row_key_cols = idx
+                    col_key_cols = col
+
+                    if row_key_cols:
+                        row_keys_df = (
+                            final_df[row_key_cols]
+                            .dropna()
+                            .astype(str)
+                            .drop_duplicates()
+                        )
+                        row_keys = row_keys_df.to_dict(orient="records")
                     else:
-                        st.info(f"当前数据中不存在受试者列 `{subj_col}`，无法展示明细。")
+                        row_keys = [{}]
 
-                    # 提供跳转到受试者档案页面的入口
-                    if st.button("🔍 查看该受试者的跨表档案", key="btn_subject_profile"):
-                        st.session_state["selected_subject_id"] = selected_id
-                        try:
-                            st.switch_page("pages/subject_profile.py")
-                        except Exception:
-                            st.info("请在左侧页面列表中打开“受试者档案”页面。")
+                    if col_key_cols:
+                        col_keys_df = (
+                            final_df[col_key_cols]
+                            .dropna()
+                            .astype(str)
+                            .drop_duplicates()
+                        )
+                        col_keys = col_keys_df.to_dict(orient="records")
+                    else:
+                        col_keys = [{}]
+
+                    total_charts = len(row_keys) * len(col_keys)
+                    if total_charts == 0:
+                        st.info("当前透视配置下没有可用于绘图的单元格。")
+                    else:
+                        max_charts = 120
+                        if total_charts > max_charts:
+                            st.warning(
+                                f"⚠️ 图表数量较多（{total_charts} 个）。"
+                                f" 默认仅展示前 {max_charts} 个，可勾选下方选项加载全部。"
+                            )
+                            render_all = st.checkbox(
+                                f"加载全部 {total_charts} 个图表（可能较慢）",
+                                key="charts_render_all",
+                            )
+                            limit = total_charts if render_all else max_charts
+                        else:
+                            limit = total_charts
+
+                        count = 0
+                        def_id_idx = next(
+                            (i for i, c in enumerate(all_final_cols) if "SUBJ" in c.upper()),
+                            0,
+                        )
+                        subj_col = st.selectbox(
+                            "ID 列 (用于绘图)", all_final_cols, index=def_id_idx
+                        )
+                        value_col = val[0]
+
+                    for i, rk in enumerate(row_keys):
+                        for j, ck in enumerate(col_keys):
+                            if count >= limit:
+                                break
+
+                            cell = final_df
+                            for col_name, v in rk.items():
+                                cell = cell[cell[col_name].astype(str) == v]
+                            for col_name, v in ck.items():
+                                cell = cell[cell[col_name].astype(str) == v]
+
+                            if cell.empty:
+                                continue
+
+                            row_title = ", ".join(
+                                [f"{k}={rk[k]}" for k in row_key_cols]
+                            ) or "(All)"
+                            col_title = ", ".join(
+                                [f"{k}={ck[k]}" for k in col_key_cols]
+                            ) or "(All)"
+                            title = f"{row_title} | {col_title}"
+                            key_suffix = f"r{i}_c{j}"
+
+                            draw_spaghetti_chart(
+                                cell,
+                                subj_col,
+                                value_col,
+                                title,
+                                f"c_{key_suffix}",
+                                actual_func,
+                                agg,
+                            )
+                            count += 1
+
+                    # 在图表区域顶部给出生成数量和时间提示
+                    from datetime import datetime
+
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    charts_info_placeholder.caption(
+                        f"已为您生成 {count} 个图表（{ts})"
+                    )
+
+                    # 4. 点击散点后展示选中受试者的完整明细
+                    selected_id = st.session_state.get("selected_subject_id")
+                    if selected_id is not None:
+                        st.markdown("---")
+                        st.subheader(f"📄 受试者明细：{selected_id}")
+
+                        if subj_col in final_df.columns:
+                            subj_df = final_df[
+                                final_df[subj_col].astype(str) == str(selected_id)
+                            ]
+                            if subj_df.empty:
+                                st.info("当前数据集中未找到该受试者的记录。")
+                            else:
+                                st.dataframe(subj_df, use_container_width=True)
+                        else:
+                            st.info(
+                                f"当前数据中不存在受试者列 `{subj_col}`，无法展示明细。"
+                            )
+
+                        # 提供跳转到受试者档案页面的入口
+                        if st.button(
+                            "🔍 查看该受试者的跨表档案", key="btn_subject_profile"
+                        ):
+                            st.session_state["selected_subject_id"] = selected_id
+                            try:
+                                st.switch_page("pages/subject_profile.py")
+                            except Exception:
+                                st.info("请在左侧页面列表中打开“受试者档案”页面。")
 
 if __name__ == "__main__":
     main()

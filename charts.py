@@ -32,6 +32,17 @@ def draw_spaghetti_chart(
     if tmp.empty:
         st.info("该组合下无有效数值数据。")
         return
+
+    # Y 轴排序：不管 subj_col 是什么列，都按列内容从小到大排序
+    try:
+        # 优先尝试按数值排序
+        tmp["_y_sort_key"] = pd.to_numeric(tmp[subj_col], errors="coerce")
+        if tmp["_y_sort_key"].isna().all():
+            raise ValueError
+        tmp = tmp.sort_values(by="_y_sort_key")
+    except Exception:
+        # 回退为按字符串字典序排序
+        tmp = tmp.sort_values(by=subj_col, key=lambda s: s.astype(str))
     
     # --- 绘图逻辑 ---
     fig = px.scatter(
