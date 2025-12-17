@@ -30,7 +30,6 @@ pip-wheel-metadata/
 # VSCode / PyCharm
 .vscode/
 .idea/
-
 # Django
 *.db
 *.sqlite3

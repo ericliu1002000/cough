@@ -354,12 +354,23 @@ def build_sql(
     filters: Dict[str, Any],
     subject_blocklist: str,
     meta_data: Dict[str, List[str]],
+    group_by: List[Dict[str, Any]] | None = None,
+    aggregations: List[Dict[str, Any]] | None = None,
 ) -> str | None:
     """
     构建最终 SQL。
+
+    支持两种模式：
+    1) 行级模式（默认，无 group_by）：SELECT 主键 + 所有选中列，不做聚合；
+    2) 聚合模式（配置了 group_by）：SELECT 仅包含 group_by 字段和 aggregations 中的聚合表达式，并添加 GROUP BY。
     """
     if not selected_tables:
         return None
+
+    # 规范化分组与聚合配置
+    group_by = group_by or []
+    aggregations = aggregations or []
+    use_group_mode = len(group_by) > 0
 
     # --- 1. 确定主表 ID ---
     base_table = selected_tables[0]
@@ -370,13 +381,43 @@ def build_sql(
 
     # --- 2. SELECT ---
     select_clauses: List[str] = []
-    # 强制加上 ID 列
-    select_clauses.append(f"`{base_table}`.`{base_id_col}` AS `SUBJECTID`")
 
-    for table in selected_tables:
-        cols = table_columns_map.get(table, [])
-        for col in cols:
-            select_clauses.append(f"`{table}`.`{col}` AS `{table}_{col}`")
+    if not use_group_mode:
+        # 行级模式：强制加上 ID 列 + 所有选中列
+        select_clauses.append(f"`{base_table}`.`{base_id_col}` AS `SUBJECTID`")
+
+        for table in selected_tables:
+            cols = table_columns_map.get(table, [])
+            for col in cols:
+                select_clauses.append(f"`{table}`.`{col}` AS `{table}_{col}`")
+    else:
+        # 聚合模式
+        # 2.1 分组字段进入 SELECT 与 GROUP BY
+        for item in group_by:
+            tbl = item.get("table")
+            col = item.get("col")
+            if not tbl or not col:
+                continue
+            alias = item.get("alias") or f"{tbl}_{col}"
+            select_clauses.append(f"`{tbl}`.`{col}` AS `{alias}`")
+
+        # 2.2 聚合字段
+        for agg in aggregations:
+            tbl = agg.get("table")
+            col = agg.get("col")
+            func = (agg.get("func") or "").upper()
+            if not tbl or not col or not func:
+                continue
+            alias = agg.get("alias") or f"{func}_{tbl}_{col}"
+            # 简单防注入：仅允许字母、数字、下划线的函数名
+            if not func.replace("_", "").isalnum():
+                continue
+            select_clauses.append(f"{func}(`{tbl}`.`{col}`) AS `{alias}`")
+
+        # 如果在聚合模式下，没有任何字段最终进入 SELECT，认为配置有误
+        if not select_clauses:
+            st.error("已启用 Group By，但未配置任何分组字段或聚合字段，无法生成 SQL。")
+            return None
 
     select_sql = "SELECT\n    " + ",\n    ".join(select_clauses)
 
@@ -426,8 +467,21 @@ def build_sql(
     if where_conditions:
         where_sql = "\nWHERE\n  " + "\n  AND ".join(where_conditions)
 
-    # --- 5. LIMIT (安全锁) ---
+    # --- 5. GROUP BY（仅聚合模式） ---
+    group_by_sql = ""
+    if use_group_mode and group_by:
+        gb_parts: List[str] = []
+        for item in group_by:
+            tbl = item.get("table")
+            col = item.get("col")
+            if not tbl or not col:
+                continue
+            gb_parts.append(f"`{tbl}`.`{col}`")
+        if gb_parts:
+            group_by_sql = "\nGROUP BY\n  " + ",\n  ".join(gb_parts)
+
+    # --- 6. LIMIT (安全锁) ---
     limit_sql = "\nLIMIT 1000"
 
-    final_sql = f"{select_sql}{from_sql}{join_sql}{where_sql}{limit_sql};"
+    final_sql = f"{select_sql}{from_sql}{join_sql}{where_sql}{group_by_sql}{limit_sql};"
     return final_sql

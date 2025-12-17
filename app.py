@@ -97,6 +97,35 @@ with st.sidebar:
                         "subject_blocklist"
                     ]
 
+                # 恢复 Group By / 聚合配置（如果有）
+                if "group_by" in extraction_cfg:
+                    gb_list = extraction_cfg.get("group_by") or []
+                    st.session_state["use_group_by"] = bool(gb_list)
+                    st.session_state["gb_count"] = len(gb_list)
+                    for i, gb in enumerate(gb_list):
+                        st.session_state[f"gb_tbl_{i}"] = gb.get("table")
+                        st.session_state[f"gb_col_{i}"] = gb.get("col")
+                        if gb.get("alias") is not None:
+                            st.session_state[f"gb_alias_{i}"] = gb.get("alias")
+
+                if "aggregations" in extraction_cfg:
+                    agg_list = extraction_cfg.get("aggregations") or []
+                    st.session_state["agg_count"] = len(agg_list)
+                    if agg_list:
+                        st.session_state["use_group_by"] = True
+                    for i, agg in enumerate(agg_list):
+                        st.session_state[f"agg_tbl_{i}"] = agg.get("table")
+                        st.session_state[f"agg_col_{i}"] = agg.get("col")
+                        if agg.get("func") is not None:
+                            # 简单反解 COUNT(DISTINCT ...) 为 COUNT_DISTINCT
+                            func = agg.get("func")
+                            if func.startswith("COUNT(DISTINCT"):
+                                st.session_state[f"agg_func_{i}"] = "COUNT_DISTINCT"
+                            else:
+                                st.session_state[f"agg_func_{i}"] = func
+                        if agg.get("alias") is not None:
+                            st.session_state[f"agg_alias_{i}"] = agg.get("alias")
+
                 st.success(f"已加载配置：{selected_setup_name}")
                 st.rerun()
 
@@ -267,11 +296,99 @@ else:
 
 filters_config = {"conditions": final_conditions}
 
+# ===========================
+# 3.x Group By & 聚合配置
+# ===========================
+st.subheader("3.x 分组与聚合 (可选)")
+use_group_by = st.checkbox("启用 Group By 聚合模式", value=False, key="use_group_by")
+
+group_by_config = []
+aggregations_config = []
+
+if use_group_by:
+    st.caption("在启用 Group By 后：SELECT 中的非分组字段必须通过聚合函数给出。")
+
+    st.markdown("**分组字段 (GROUP BY)**")
+    gb_rows = st.number_input("分组字段个数", min_value=0, max_value=10, value=0, step=1, key="gb_count")
+    for i in range(int(gb_rows)):
+        c1, c2, c3 = st.columns([2, 2, 2])
+        with c1:
+            tbl = st.selectbox(
+                f"分组表 {i+1}",
+                options=selected_tables,
+                key=f"gb_tbl_{i}",
+            )
+        with c2:
+            cols = meta_data.get(tbl, [])
+            col = st.selectbox(
+                f"分组列 {i+1}",
+                options=cols,
+                key=f"gb_col_{i}",
+            )
+        with c3:
+            alias = st.text_input(
+                "别名 (可选)",
+                key=f"gb_alias_{i}",
+                placeholder=f"{tbl}_{col}" if tbl and col else "",
+            )
+        if tbl and col:
+            group_by_config.append({"table": tbl, "col": col, "alias": alias})
+
+    st.markdown("**聚合字段 (Aggregations)**")
+    agg_rows = st.number_input("聚合字段个数", min_value=0, max_value=20, value=0, step=1, key="agg_count")
+    agg_func_options = ["COUNT", "COUNT_DISTINCT", "SUM", "AVG", "MIN", "MAX"]
+    for i in range(int(agg_rows)):
+        c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
+        with c1:
+            tbl = st.selectbox(
+                f"聚合表 {i+1}",
+                options=selected_tables,
+                key=f"agg_tbl_{i}",
+            )
+        with c2:
+            cols = meta_data.get(tbl, [])
+            col = st.selectbox(
+                f"聚合列 {i+1}",
+                options=cols,
+                key=f"agg_col_{i}",
+            )
+        with c3:
+            func_raw = st.selectbox(
+                "函数",
+                options=agg_func_options,
+                key=f"agg_func_{i}",
+            )
+        with c4:
+            alias = st.text_input(
+                "别名 (可选)",
+                key=f"agg_alias_{i}",
+                placeholder=f"{func_raw}_{tbl}_{col}" if tbl and col else "",
+            )
+
+        if tbl and col and func_raw:
+            func_sql = "COUNT(DISTINCT" if func_raw == "COUNT_DISTINCT" else func_raw
+            aggregations_config.append(
+                {
+                    "table": tbl,
+                    "col": col,
+                    "func": func_sql,
+                    "alias": alias,
+                }
+            )
+
 # --- 生成 ---
 st.divider()
 
 if st.button("🚀 生成 SQL 并预览数据", type="primary"):
-    sql = build_sql(selected_tables, table_columns_map, filters_config, subject_blocklist, meta_data)
+    sql = build_sql(
+        selected_tables,
+        table_columns_map,
+        filters_config,
+        subject_blocklist,
+        meta_data,
+        group_by=group_by_config if use_group_by else None,
+        aggregations=aggregations_config if use_group_by else None,
+    )
     
     if sql:
         st.subheader("生成的 SQL:")
@@ -325,6 +442,8 @@ if submitted:
             "table_columns_map": table_columns_map,
             "filters": filters_config,
             "subject_blocklist": subject_blocklist,
+            "group_by": group_by_config if use_group_by else [],
+            "aggregations": aggregations_config if use_group_by else [],
             "max_table_number": MAX_TABLE_NUMBER,
         }
         save_extraction_config(name, description_input or None, extraction_config)
