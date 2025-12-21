@@ -368,7 +368,7 @@ def calculate_anova_f_test(df, group_col, value_col):
     except Exception:
         return None, None
 
-
+#已验证
 def calculate_t_test_from_summary(mean_trt: float,
                                   mean_placebo: float,
                                   sd_trt: float,
@@ -410,7 +410,7 @@ def calculate_t_test_from_summary(mean_trt: float,
         return np.nan, np.nan
 
 
-#已验证
+
 def calculate_proportion_p_value(p1: float,
                                  p2: float,
                                  n1: int,

@@ -282,7 +282,7 @@ def main() -> None:
 
         # 原始数据预览：展示完整数据清单（几百行级别）
         with st.expander("📄 原始数据预览（查询结果）", expanded=False):
-            st.dataframe(raw_df, use_container_width=True)
+            st.dataframe(raw_df, width="stretch")
             st.download_button(
                 "📥 下载原始数据",
                 raw_df.to_csv(index=False).encode("utf-8-sig"),
@@ -467,7 +467,7 @@ def main() -> None:
 
         # 数据预览
         with st.expander("📄 最终数据预览"):
-            st.dataframe(final_df.head(100), use_container_width=True)
+            st.dataframe(final_df.head(100), width="stretch")
             st.download_button("📥 下载最终数据", final_df.to_csv(index=False).encode("utf-8-sig"), "final_data.csv")
 
         all_final_cols = list(final_df.columns)
@@ -512,7 +512,7 @@ def main() -> None:
                     values=val,
                     aggfunc=aggfunc_map,
                 )
-                st.dataframe(pivot, use_container_width=True)
+                st.dataframe(pivot, width="stretch")
                 st.download_button(
                     "📥 下载透视表",
                     pivot.to_csv().encode("utf-8-sig"),
@@ -533,7 +533,7 @@ def main() -> None:
                     group_col=col[0], 
                     value_col=val[0]
                 )
-                st.dataframe(anova_df, use_container_width=True)
+                st.dataframe(anova_df, width="stretch")
 
             # 3. 绘图（支持多行维度 / 多列维度，按迪卡尔积生成单元格）
             if val:
@@ -733,7 +733,7 @@ def main() -> None:
                             if subj_df.empty:
                                 st.info("当前数据集中未找到该受试者的记录。")
                             else:
-                                st.dataframe(subj_df, use_container_width=True)
+                                st.dataframe(subj_df, width="stretch")
                         else:
                             st.info(
                                 f"当前数据中不存在受试者列 `{subj_col}`，无法展示明细。"

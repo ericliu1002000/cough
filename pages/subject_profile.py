@@ -82,7 +82,7 @@ def main() -> None:
         st.subheader(f"表：`{table_name}`  （行数：{len(df)}）")
 
         if len(df) <= 10:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
         else:
             st.caption(f"只展示前 10 行，共 {len(df)} 行。")
             show_full = st.checkbox(
@@ -90,9 +90,9 @@ def main() -> None:
                 key=f"show_full_{table_name}",
             )
             if show_full:
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(df, width="stretch")
             else:
-                st.dataframe(df.head(10), use_container_width=True)
+                st.dataframe(df.head(10), width="stretch")
 
 
 if __name__ == "__main__":
