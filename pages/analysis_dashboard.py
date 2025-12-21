@@ -19,6 +19,11 @@ from utils import (
 from analysis_methods import CALC_METHODS, AGG_METHODS
 # 引入独立的图表组件
 from charts import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
+from charts_uniform import (
+    build_uniform_spaghetti_fig,
+    compute_uniform_axes,
+    render_uniform_spaghetti_fig,
+)
 
 st.set_page_config(page_title="分析仪表盘", layout="wide")
 st.title("📊 分析仪表盘")
@@ -602,6 +607,28 @@ def main() -> None:
                             "ID 列 (用于绘图)", all_final_cols, index=def_id_idx
                         )
                         value_col = val[0]
+                        chart_type = st.radio(
+                            "图表类型",
+                            ["经典", "统一坐标"],
+                            horizontal=True,
+                            key="chart_type_mode",
+                        )
+
+                        use_uniform_chart = chart_type == "统一坐标"
+                        uniform_x_range = None
+                        uniform_y_max = None
+                        if use_uniform_chart:
+                            uniform_x_range, uniform_y_max = compute_uniform_axes(
+                                final_df, row_key_cols, col_key_cols, value_col
+                            )
+                            if uniform_y_max <= 0:
+                                uniform_x_range = None
+                                uniform_y_max = None
+
+                        agg_names_for_plot = aggs[:2]
+                        agg_funcs_for_plot = [
+                            AGG_METHODS.get(name) for name in agg_names_for_plot
+                        ]
                         # 绘图使用的聚合函数：取多选聚合函数中的第一个作为参考线
                         primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
                         actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
@@ -620,30 +647,48 @@ def main() -> None:
                         "#17becf",
                     ]
 
-                    for i, rk in enumerate(row_keys):
-                        group_color = color_palette[i % len(color_palette)]
-                        for j, ck in enumerate(col_keys):
-                            if count >= limit:
-                                break
+                    max_cols_per_row = 3
 
-                            cell = final_df
-                            for col_name, v in rk.items():
-                                cell = cell[cell[col_name].astype(str) == v]
-                            for col_name, v in ck.items():
-                                cell = cell[cell[col_name].astype(str) == v]
+                    def render_cell_chart(
+                        row_key: dict,
+                        col_key: dict,
+                        row_idx: int,
+                        col_idx: int,
+                        chart_color: str,
+                    ) -> None:
+                        nonlocal count
 
-                            if cell.empty:
-                                continue
+                        cell = final_df
+                        for col_name, v in row_key.items():
+                            cell = cell[cell[col_name].astype(str) == v]
+                        for col_name, v in col_key.items():
+                            cell = cell[cell[col_name].astype(str) == v]
 
-                            row_title = ", ".join(
-                                [f"{k}={rk[k]}" for k in row_key_cols]
-                            ) or "(All)"
-                            col_title = ", ".join(
-                                [f"{k}={ck[k]}" for k in col_key_cols]
-                            ) or "(All)"
-                            title = f"{row_title} | {col_title}"
-                            key_suffix = f"r{i}_c{j}"
+                        if cell.empty:
+                            return
 
+                        row_title = ", ".join(
+                            [f"{k}={row_key[k]}" for k in row_key_cols]
+                        ) or "(All)"
+                        col_title = ", ".join(
+                            [f"{k}={col_key[k]}" for k in col_key_cols]
+                        ) or "(All)"
+                        title = f"{row_title} | {col_title}"
+                        key_suffix = f"r{row_idx}_c{col_idx}"
+
+                        if use_uniform_chart:
+                            fig = build_uniform_spaghetti_fig(
+                                df=cell,
+                                subj_col=subj_col,
+                                value_col=value_col,
+                                title=title,
+                                x_range=uniform_x_range,
+                                y_max_count=uniform_y_max,
+                                agg_funcs=agg_funcs_for_plot,
+                                agg_names=agg_names_for_plot,
+                                marker_color=chart_color,
+                            )
+                        else:
                             fig = build_spaghetti_fig(
                                 df=cell,
                                 subj_col=subj_col,
@@ -651,22 +696,57 @@ def main() -> None:
                                 title=title,
                                 agg_func=actual_func_for_plot,
                                 agg_name=primary_agg_name,
-                                marker_color=group_color,
+                                marker_color=chart_color,
                             )
-                            if fig is None:
-                                continue
+                        if fig is None:
+                            return
 
-                            # -------------------------------------------------------
-                            # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
-                            # -------------------------------------------------------
-                            # 在 render 之前，先克隆一份“干净”的 Figure 用于导出。
-                            # 这样无论 st.plotly_chart 对 fig 做了什么(如注入JS回调)，
-                            # 导出用的 fig_for_export 永远是纯净的。
-                            fig_for_export = copy.deepcopy(fig)
+                        # -------------------------------------------------------
+                        # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
+                        # -------------------------------------------------------
+                        # 在 render 之前，先克隆一份“干净”的 Figure 用于导出。
+                        # 这样无论 st.plotly_chart 对 fig 做了什么(如注入JS回调)，
+                        # 导出用的 fig_for_export 永远是纯净的。
+                        fig_for_export = copy.deepcopy(fig)
 
+                        if use_uniform_chart:
+                            render_uniform_spaghetti_fig(
+                                fig, key=f"c_{key_suffix}"
+                            )
+                        else:
                             render_spaghetti_fig(fig, key=f"c_{key_suffix}")
-                            all_figs.append((title, fig))
-                            count += 1
+                        all_figs.append((title, fig))
+                        count += 1
+
+                    stop_render = False
+                    for i, rk in enumerate(row_keys):
+                        if stop_render:
+                            break
+                        group_color = color_palette[i % len(color_palette)]
+
+                        if use_uniform_chart:
+                            for chunk_start in range(0, len(col_keys), max_cols_per_row):
+                                if stop_render:
+                                    break
+                                chunk = col_keys[
+                                    chunk_start : chunk_start + max_cols_per_row
+                                ]
+                                cols = st.columns(max_cols_per_row)
+                                for col_pos, ck in enumerate(chunk):
+                                    if count >= limit:
+                                        stop_render = True
+                                        break
+                                    j = chunk_start + col_pos
+                                    with cols[col_pos]:
+                                        render_cell_chart(
+                                            rk, ck, i, j, group_color
+                                        )
+                        else:
+                            for j, ck in enumerate(col_keys):
+                                if count >= limit:
+                                    stop_render = True
+                                    break
+                                render_cell_chart(rk, ck, i, j, group_color)
 
                     # 在图表区域顶部给出生成数量和时间提示
                     from datetime import datetime
