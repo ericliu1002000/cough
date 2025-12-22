@@ -94,8 +94,7 @@ def fetch_all_setups() -> List[Dict[str, Any]]:
             )
             rows = [dict(row) for row in result.mappings()]
         return rows
-    except Exception as e:
-        print(f"[Warning] 无法加载分析集配置列表: {e}")
+    except Exception:
         return []
 
 
@@ -128,9 +127,19 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
         def _normalize_json(value: Any) -> Any:
             if value is None:
                 return None
+            if isinstance(value, (bytes, bytearray)):
+                try:
+                    value = value.decode("utf-8")
+                except Exception:
+                    return None
             if isinstance(value, str):
                 try:
-                    return json.loads(value)
+                    parsed = json.loads(value)
+                    if isinstance(parsed, str):
+                        trimmed = parsed.strip()
+                        if trimmed.startswith("{") or trimmed.startswith("["):
+                            return json.loads(trimmed)
+                    return parsed
                 except json.JSONDecodeError:
                     return value
             return value
@@ -143,7 +152,6 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
         # - note: str
         # - exclusions: List[Dict]
         # - pivot: Dict[str, Any]
-        # 同时兼容历史数据（仅存 List 或 None）。
         if raw_calculation is None:
             calculation: Dict[str, Any] = {
                 "calc_rules": [],
@@ -156,24 +164,11 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
                     "agg": "mean",
                 },
             }
-        elif isinstance(raw_calculation, list):
-            # 早期版本只保存了规则列表
-            calculation = {
-                "calc_rules": raw_calculation,
-                "note": "",
-                "exclusions": [],
-                "pivot": {
-                    "index": [],
-                    "columns": [],
-                    "values": [],
-                    "agg": "mean",
-                },
-            }
         elif isinstance(raw_calculation, dict):
-            # 复制一份，补齐默认键，保留未来可能增加的字段（如 pivot、exclusions）
             calculation = dict(raw_calculation)
+
             calculation.setdefault("calc_rules", [])
-            calculation.setdefault("note", "")
+            calculation["note"] = raw_calculation.get("note", "")
             calculation.setdefault("exclusions", [])
             calculation.setdefault(
                 "pivot",
@@ -305,9 +300,7 @@ def get_unique_values(table: str, column: str, limit: int = 100) -> List[str]:
         # 将结果转为列表，过滤空值
         values = df.iloc[:, 0].dropna().astype(str).tolist()
         return sorted(values)
-    except Exception as e:
-        # 不阻塞主流程，只在后台记录
-        print(f"[Warning] 无法获取列值: {e}")
+    except Exception:
         return []
 
 

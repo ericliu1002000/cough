@@ -1,7 +1,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 
@@ -184,6 +184,50 @@ def build_uniform_spaghetti_fig(
     fig.update_xaxes(automargin=True, title_standoff=12)
 
     return fig
+
+
+def resolve_uniform_line_aggs(
+    available_agg_names: List[str],
+    default_names: List[str],
+    agg_methods: Dict[str, Any],
+    key: str = "uniform_line_aggs",
+) -> tuple[List[str], List[Any]]:
+    if not available_agg_names:
+        return [], []
+
+    default_filtered = [
+        name for name in default_names if name in available_agg_names
+    ][:2]
+    if not default_filtered:
+        default_filtered = available_agg_names[:2]
+
+    existing = st.session_state.get(key)
+    if isinstance(existing, list):
+        filtered = [
+            name for name in existing if name in available_agg_names
+        ][:2]
+        if filtered:
+            st.session_state[key] = filtered
+        else:
+            st.session_state.pop(key, None)
+
+    selected = st.multiselect(
+        "中垂线统计量（最多两条）",
+        options=available_agg_names,
+        default=default_filtered,
+        max_selections=2,
+        key=key,
+        help="默认取当前视图的前两个聚合函数，可自选 1-2 个。",
+    )
+    if not selected:
+        selected = default_filtered
+        st.session_state[key] = selected
+    elif len(selected) > 2:
+        selected = selected[:2]
+        st.session_state[key] = selected
+
+    funcs = [agg_methods.get(name) for name in selected]
+    return selected, funcs
 
 
 def render_uniform_spaghetti_fig(fig: "go.Figure", key: str) -> None:

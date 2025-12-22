@@ -26,6 +26,7 @@ from charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
     render_uniform_spaghetti_fig,
+    resolve_uniform_line_aggs,
 )
 from exports.charts import build_charts_export_html
 from exports.common import df_to_csv_bytes
@@ -248,31 +249,30 @@ def main() -> None:
         st.session_state["current_setup_name"] = selected_row["setup_name"]
         need_reload = True
     else:
-        need_reload = st.session_state["current_setup_name"] != selected_row["setup_name"]
+        need_reload = (
+            st.session_state["current_setup_name"] != selected_row["setup_name"]
+        )
 
     if need_reload:
         st.session_state["current_setup_name"] = selected_row["setup_name"]
-        
+
         cfg_pack = fetch_setup_config(selected_row["setup_name"]) or {}
         calc_cfg = cfg_pack.get("calculation") or {}
-        if isinstance(calc_cfg, list): calc_cfg = {"calc_rules": calc_cfg}
-        
+        if isinstance(calc_cfg, list):
+            calc_cfg = {"calc_rules": calc_cfg}
+
         st.session_state["calc_rules"] = calc_cfg.get("calc_rules", [])
         st.session_state["calc_note"] = calc_cfg.get("note", "")
+        st.session_state.pop("calc_note_input", None)
         st.session_state["exclusions"] = calc_cfg.get("exclusions", [])
         st.session_state["pivot_config"] = calc_cfg.get("pivot", {})
         st.session_state["baseline_config"] = calc_cfg.get("baseline", {}) 
 
         p_cfg = st.session_state["pivot_config"]
-        # 兼容历史数据：早期版本可能使用简单字符串 'mean' 作为聚合函数名，
-        # 现在统一为聚合函数名称列表。
         raw_agg = p_cfg.get("agg", ["Mean - 平均值"])
-        if isinstance(raw_agg, str):
-            if raw_agg == "mean":
-                raw_agg = "Mean - 平均值"
-            raw_aggs = [raw_agg]
-        else:
-            raw_aggs = list(raw_agg)
+        raw_aggs = list(raw_agg) if isinstance(raw_agg, (list, tuple, set)) else [
+            raw_agg
+        ]
 
         st.session_state["pivot_index"] = p_cfg.get("index", [])
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
@@ -293,6 +293,17 @@ def main() -> None:
             k: list(v) if isinstance(v, (list, tuple, set)) else []
             for k, v in col_order_cfg.items()
         }
+        line_aggs_cfg = p_cfg.get("uniform_line_aggs", [])
+        if isinstance(line_aggs_cfg, (list, tuple, set)):
+            line_aggs = [
+                a for a in line_aggs_cfg if a in AGG_METHODS
+            ]
+            if line_aggs:
+                st.session_state["uniform_line_aggs"] = line_aggs
+            else:
+                st.session_state.pop("uniform_line_aggs", None)
+        else:
+            st.session_state.pop("uniform_line_aggs", None)
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -463,14 +474,20 @@ def main() -> None:
         # [Step D] 备注 & 保存配置
         # ==========================================
         st.markdown("##### 📝 备注")
-        st.text_area("分析备注", key="calc_note", height=80)
+        default_note = st.session_state.get("calc_note", "")
+        st.text_area(
+            "分析备注",
+            value=default_note,
+            key="calc_note_input",
+            height=80,
+        )
 
         st.divider()
         if st.button("💾 保存所有配置"):
             payload = {
                 "baseline": st.session_state.get("baseline_config", {}),
                 "calc_rules": st.session_state.get("calc_rules", []),
-                "note": st.session_state.get("calc_note", ""),
+                "note": st.session_state.get("calc_note_input", ""),
                 "exclusions": st.session_state.get("exclusions", []),
                 "pivot": {
                     "index": st.session_state.get("pivot_index", []),
@@ -485,6 +502,9 @@ def main() -> None:
                         ),
                     },
                     "col_order": st.session_state.get("pivot_col_order", {}),
+                    "uniform_line_aggs": st.session_state.get(
+                        "uniform_line_aggs", []
+                    ),
                 },
             }
             save_calculation_config(selected_row["setup_name"], payload)
@@ -892,6 +912,16 @@ def main() -> None:
                         agg_funcs_for_plot = [
                             AGG_METHODS.get(name) for name in agg_names_for_plot
                         ]
+                        if use_uniform_chart:
+                            (
+                                agg_names_for_plot,
+                                agg_funcs_for_plot,
+                            ) = resolve_uniform_line_aggs(
+                                agg_options,
+                                aggs,
+                                AGG_METHODS,
+                                key="uniform_line_aggs",
+                            )
                         # 绘图使用的聚合函数：取多选聚合函数中的第一个作为参考线
                         primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
                         actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
@@ -1086,22 +1116,6 @@ def main() -> None:
                     if count > 0 and all_figs:
                         if st.button("📥 下载所有图表 (HTML)", key="btn_export_charts"):
                             html_blocks: list[str] = []
-
-                            # 【DEBUG START】 打印第一张图的 X 轴数据，看看是数值还是下标
-                            if all_figs:
-                                first_fig = all_figs[0]["fig"]
-                                # 尝试获取 X 轴数据（通常在 data[0].x）
-                                try:
-                                    x_sample = first_fig.data[0].x
-                                    print(f"--- [DEBUG] Export Check ---")
-                                    print(f"First Chart Title: {all_figs[0]['title']}")
-                                    print(f"X Data Type: {type(x_sample)}")
-                                    # 打印前 10 个值
-                                    print(f"X Data Sample: {list(x_sample)[:10] if hasattr(x_sample, '__iter__') else x_sample}")
-                                    print(f"----------------------------")
-                                except Exception as e:
-                                    print(f"--- [DEBUG] Error reading x data: {e} ---")
-                            # 【DEBUG END】
 
                             full_html = build_charts_export_html(all_figs)
 
