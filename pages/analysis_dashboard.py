@@ -1,10 +1,12 @@
 import html
 import json
+from urllib.parse import urlencode
 from typing import Any, Dict, List
 
 import pandas as pd
 import copy
 import streamlit as st
+from streamlit import config as st_config
 from scipy import stats  # 用于计算 ANOVA
 
 from settings import get_engine
@@ -25,9 +27,23 @@ from charts.uniform import (
     compute_uniform_axes,
     render_uniform_spaghetti_fig,
 )
+from exports.charts import build_charts_export_html
+from exports.common import df_to_csv_bytes
 
 st.set_page_config(page_title="分析仪表盘", layout="wide")
 st.title("📊 分析仪表盘")
+st.markdown(
+    """
+    <style>
+    section.main > div.block-container {
+        max-width: 100%;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ==========================================
@@ -291,7 +307,7 @@ def main() -> None:
             st.dataframe(raw_df, width="stretch")
             st.download_button(
                 "📥 下载原始数据",
-                raw_df.to_csv(index=False).encode("utf-8-sig"),
+                df_to_csv_bytes(raw_df, index=False),
                 "raw_data.csv",
             )
 
@@ -474,9 +490,29 @@ def main() -> None:
         # 数据预览
         with st.expander("📄 最终数据预览"):
             st.dataframe(final_df.head(100), width="stretch")
-            st.download_button("📥 下载最终数据", final_df.to_csv(index=False).encode("utf-8-sig"), "final_data.csv")
+            st.download_button(
+                "📥 下载最终数据",
+                df_to_csv_bytes(final_df, index=False),
+                "final_data.csv",
+            )
 
         all_final_cols = list(final_df.columns)
+
+        def normalize_pivot_selection(key: str) -> None:
+            cur = st.session_state.get(key, [])
+            if isinstance(cur, str):
+                cur_list = [cur]
+            elif cur is None:
+                cur_list = []
+            elif isinstance(cur, (list, tuple, set)):
+                cur_list = list(cur)
+            else:
+                cur_list = [cur]
+            st.session_state[key] = [c for c in cur_list if c in all_final_cols]
+
+        normalize_pivot_selection("pivot_index")
+        normalize_pivot_selection("pivot_columns")
+        normalize_pivot_selection("pivot_values")
         
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -521,7 +557,7 @@ def main() -> None:
                 st.dataframe(pivot, width="stretch")
                 st.download_button(
                     "📥 下载透视表",
-                    pivot.to_csv().encode("utf-8-sig"),
+                    df_to_csv_bytes(pivot, index=True),
                     "pivot_table_multi_agg.csv",
                 )
             except Exception as e:
@@ -858,100 +894,7 @@ def main() -> None:
                                     print(f"--- [DEBUG] Error reading x data: {e} ---")
                             # 【DEBUG END】
 
-                            use_uniform_layout = (
-                                all_figs
-                                and all_figs[0].get("chart_type") == "uniform"
-                            )
-                            layout_class = (
-                                "charts-grid" if use_uniform_layout else "charts-stack"
-                            )
-
-                            for item in all_figs:
-                                fig = item["fig"]
-                                title_html = item.get("title_html", "")
-                                legend_items = item.get("legend_items", [])
-                                fig_html = fig.to_html(
-                                    full_html=False,
-                                    include_plotlyjs=False,
-                                    config={"responsive": True},
-                                )
-
-                                legend_lines = []
-                                for legend_item in legend_items:
-                                    dash_style = (
-                                        "dashed"
-                                        if legend_item.get("dash") == "dash"
-                                        else "solid"
-                                    )
-                                    label_text = html.escape(
-                                        str(legend_item.get("label", "Agg"))
-                                    )
-                                    value_text = legend_item.get("value")
-                                    try:
-                                        value_fmt = f"{float(value_text):.2f}"
-                                    except Exception:
-                                        value_fmt = "-"
-                                    legend_lines.append(
-                                        "<div class='legend-line'>"
-                                        f"<span class='legend-rule {dash_style}'></span>"
-                                        f"<span>{label_text}: {value_fmt}</span>"
-                                        "</div>"
-                                    )
-                                legend_html = (
-                                    "<div class='chart-legend'>"
-                                    + "".join(legend_lines)
-                                    + "</div>"
-                                    if legend_lines
-                                    else ""
-                                )
-
-                                html_blocks.append(
-                                    "<div class='chart-card'>"
-                                    f"<div class='chart-title'>{title_html}</div>"
-                                    f"<div class='chart-wrap'>{fig_html}</div>"
-                                    f"{legend_html}"
-                                    "</div>"
-                                )
-
-                            full_html = (
-                                "<html><head>"
-                                "<meta charset='utf-8' />"
-                                "<style>"
-                                "body{font-family:Arial,Helvetica,sans-serif;}"
-                                ".charts-grid{display:grid;grid-template-columns:"
-                                "repeat(3,minmax(0,1fr));gap:16px;}"
-                                ".charts-stack{display:flex;flex-direction:column;"
-                                "gap:16px;}"
-                                ".chart-card{width:100%;}"
-                                ".chart-title{text-align:center;font-weight:600;"
-                                "font-size:16px;line-height:1.2;margin-bottom:8px;}"
-                                ".chart-wrap{width:100%;}"
-                                ".charts-grid .chart-wrap{aspect-ratio:1/1;}"
-                                ".chart-wrap .js-plotly-plot,"
-                                ".chart-wrap .plot-container,"
-                                ".chart-wrap .svg-container{width:100% !important;"
-                                "height:100% !important;}"
-                                ".chart-legend{margin-top:4px;}"
-                                ".legend-line{display:flex;justify-content:center;"
-                                "align-items:center;gap:8px;font-size:12px;"
-                                "color:#c00;line-height:1.2;margin-top:2px;}"
-                                ".legend-rule{display:inline-block;width:32px;"
-                                "border-top:3px solid #c00;}"
-                                ".legend-rule.dashed{border-top-style:dashed;}"
-                                "@media (max-width: 900px){"
-                                ".charts-grid{grid-template-columns:repeat(2,minmax(0,1fr));}"
-                                "}"
-                                "@media (max-width: 600px){"
-                                ".charts-grid{grid-template-columns:1fr;}"
-                                "}"
-                                "</style>"
-                                "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
-                                "</head><body>"
-                                + f"<div class='{layout_class}'>"
-                                + "\n".join(html_blocks)
-                                + "</div>"
-                                + "</body></html>"
-                            )
+                            full_html = build_charts_export_html(all_figs)
 
                             st.download_button(
                                 "⬇️ 保存为 HTML 文件",
@@ -981,18 +924,15 @@ def main() -> None:
                             )
 
                         # 提供跳转到受试者档案页面的入口
-                        if st.button(
-                            "🔍 查看该受试者的跨表档案", key="btn_subject_profile"
-                        ):
-                            st.session_state["selected_subject_id"] = selected_id
-                            try:
-                                st.switch_page("pages/subject_profile.py")
-                            except Exception:
-                                st.info("请在左侧页面列表中打开“受试者档案”页面。")
+                        def build_subject_profile_url(subject_id: Any) -> str:
+                            base_path = st_config.get_option("server.baseUrlPath") or ""
+                            base_prefix = f"/{base_path.strip('/')}" if base_path else ""
+                            query = urlencode({"subject_id": str(subject_id)})
+                            return f"{base_prefix}/subject_profile?{query}"
                         
                         st.link_button(
                             "🔍 在新标签页打开受试者档案",
-                            f"/subject_profile?subject_id={selected_id}",
+                            build_subject_profile_url(selected_id),
                         )
 
 if __name__ == "__main__":
