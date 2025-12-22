@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
+
+import pandas as pd
+
+from analysis_methods import AGG_METHODS
+
+
+@dataclass(frozen=True)
+class NestedPivotData:
+    row_key_cols: List[str]
+    col_key_cols: List[str]
+    row_keys: List[Dict[str, str]]
+    col_keys: List[Dict[str, str]]
+    row_key_tuples: List[Tuple[str, ...]]
+    col_key_tuples: List[Tuple[str, ...]]
+    value_cols: List[str]
+    agg_names: List[str]
+    values: Dict[Tuple[Tuple[str, ...], Tuple[str, ...], str, str], Any]
+
+
+def format_key_label(key: Dict[str, str], sep: str = ", ") -> str:
+    if not key:
+        return ""
+    return sep.join(f"{k}={v}" for k, v in key.items())
+
+
+def _order_row_keys(
+    row_keys_df: pd.DataFrame,
+    row_key_cols: List[str],
+    row_order: List[str] | None,
+) -> pd.DataFrame:
+    if not row_key_cols or not row_order or row_keys_df.empty:
+        return row_keys_df
+
+    first_col = row_key_cols[0]
+    order_map = {val: idx for idx, val in enumerate(row_order)}
+    order_vals = row_keys_df[first_col].map(
+        lambda v: order_map.get(v, len(order_map))
+    )
+    ordered = row_keys_df.assign(_order=order_vals)
+    ordered = ordered.sort_values("_order", kind="stable")
+    return ordered.drop(columns="_order")
+
+
+def build_nested_pivot_data(
+    df: pd.DataFrame,
+    row_key_cols: List[str],
+    col_key_cols: List[str],
+    value_cols: List[str],
+    agg_names: List[str],
+    row_order: List[str] | None = None,
+) -> NestedPivotData:
+    row_key_cols = list(row_key_cols or [])
+    col_key_cols = list(col_key_cols or [])
+    value_cols = list(value_cols or [])
+    agg_names = list(agg_names or [])
+    row_order = [str(v) for v in row_order] if row_order else None
+
+    work_df = df.copy()
+    key_cols = row_key_cols + col_key_cols
+    if key_cols:
+        work_df = work_df.dropna(subset=key_cols)
+        for key_col in key_cols:
+            work_df[key_col] = work_df[key_col].astype(str)
+
+    if row_key_cols:
+        row_keys_df = work_df[row_key_cols].drop_duplicates()
+        row_keys_df = _order_row_keys(row_keys_df, row_key_cols, row_order)
+        row_keys = row_keys_df.to_dict(orient="records")
+        row_key_tuples = [
+            tuple(rec.get(col, "") for col in row_key_cols) for rec in row_keys
+        ]
+    else:
+        row_keys = [{}]
+        row_key_tuples = [()]
+
+    if col_key_cols:
+        col_keys_df = work_df[col_key_cols].drop_duplicates()
+        col_keys = col_keys_df.to_dict(orient="records")
+        col_key_tuples = [
+            tuple(rec.get(col, "") for col in col_key_cols) for rec in col_keys
+        ]
+    else:
+        col_keys = [{}]
+        col_key_tuples = [()]
+
+    values: Dict[Tuple[Tuple[str, ...], Tuple[str, ...], str, str], Any] = {}
+    if value_cols and agg_names:
+        group_cols = row_key_cols + col_key_cols
+        if group_cols:
+            grouped = work_df.groupby(group_cols, dropna=False, sort=False)
+        else:
+            grouped = [((), work_df)]
+
+        for key, group in grouped:
+            key_tuple = key if isinstance(key, tuple) else (key,)
+            row_tuple = tuple(key_tuple[: len(row_key_cols)])
+            col_tuple = tuple(key_tuple[len(row_key_cols) :])
+
+            for value_col in value_cols:
+                series = group[value_col]
+                for agg_name in agg_names:
+                    agg_func = AGG_METHODS.get(agg_name, "mean")
+                    try:
+                        if callable(agg_func):
+                            agg_val = agg_func(series)
+                        else:
+                            agg_val = series.agg(agg_func)
+                    except Exception:
+                        agg_val = None
+                    values[(row_tuple, col_tuple, value_col, agg_name)] = agg_val
+
+    return NestedPivotData(
+        row_key_cols=row_key_cols,
+        col_key_cols=col_key_cols,
+        row_keys=row_keys,
+        col_keys=col_keys,
+        row_key_tuples=row_key_tuples,
+        col_key_tuples=col_key_tuples,
+        value_cols=value_cols,
+        agg_names=agg_names,
+        values=values,
+    )

@@ -29,6 +29,9 @@ from charts.uniform import (
 )
 from exports.charts import build_charts_export_html
 from exports.common import df_to_csv_bytes
+from exports.pivot import nested_pivot_to_excel_bytes
+from views.pivot_classic import render_pivot_classic
+from views.pivot_nested import render_pivot_nested
 
 st.set_page_config(page_title="分析仪表盘", layout="wide")
 st.title("📊 分析仪表盘")
@@ -275,6 +278,14 @@ def main() -> None:
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
         st.session_state["pivot_values"] = p_cfg.get("values", [])
         st.session_state["pivot_aggs"] = raw_aggs
+        st.session_state["pivot_view_mode"] = p_cfg.get("view", "classic")
+        row_order_cfg = p_cfg.get("row_order", {})
+        if not isinstance(row_order_cfg, dict):
+            row_order_cfg = {}
+        st.session_state["pivot_row_order_field"] = row_order_cfg.get("field")
+        st.session_state["pivot_row_order_values"] = list(
+            row_order_cfg.get("values", [])
+        )
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -459,6 +470,13 @@ def main() -> None:
                     "columns": st.session_state.get("pivot_columns", []),
                     "values": st.session_state.get("pivot_values", []),
                     "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
+                    "view": st.session_state.get("pivot_view_mode", "classic"),
+                    "row_order": {
+                        "field": st.session_state.get("pivot_row_order_field"),
+                        "values": st.session_state.get(
+                            "pivot_row_order_values", []
+                        ),
+                    },
                 },
             }
             save_calculation_config(selected_row["setup_name"], payload)
@@ -513,6 +531,24 @@ def main() -> None:
         normalize_pivot_selection("pivot_index")
         normalize_pivot_selection("pivot_columns")
         normalize_pivot_selection("pivot_values")
+
+        def sync_pivot_row_order(
+            field: str, available_values: list[str]
+        ) -> list[str]:
+            stored_field = st.session_state.get("pivot_row_order_field")
+            stored_values = st.session_state.get("pivot_row_order_values", [])
+            if not isinstance(stored_values, list):
+                stored_values = list(stored_values)
+
+            if stored_field != field:
+                st.session_state["pivot_row_order_field"] = field
+                st.session_state["pivot_row_order_values"] = list(available_values)
+                return st.session_state["pivot_row_order_values"]
+
+            new_order = [v for v in stored_values if v in available_values]
+            new_order.extend([v for v in available_values if v not in new_order])
+            st.session_state["pivot_row_order_values"] = new_order
+            return new_order
         
         c1, c2, c3, c4 = st.columns(4)
         with c1:
@@ -536,30 +572,106 @@ def main() -> None:
                 key="pivot_aggs",
             )
 
+        view_labels = {"classic": "经典透视表", "nested": "嵌套透视表"}
+        view_options = list(view_labels.values())
+        current_view = st.session_state.get("pivot_view_mode", "classic")
+        current_label = view_labels.get(current_view, view_options[0])
+        try:
+            view_index = view_options.index(current_label)
+        except ValueError:
+            view_index = 0
+        view_choice = st.radio(
+            "透视表视图",
+            view_options,
+            index=view_index,
+            horizontal=True,
+        )
+        selected_view = next(
+            key for key, label in view_labels.items() if label == view_choice
+        )
+        st.session_state["pivot_view_mode"] = selected_view
+
+        row_order_values = None
+        if idx:
+            first_field = idx[0]
+            if first_field in final_df.columns:
+                available_values = (
+                    final_df[first_field]
+                    .dropna()
+                    .astype(str)
+                    .drop_duplicates()
+                    .tolist()
+                )
+            else:
+                available_values = []
+            row_order_values = sync_pivot_row_order(
+                first_field, available_values
+            )
+
+            with st.expander(f"行维度顺序（{first_field}）", expanded=False):
+                if not row_order_values:
+                    st.caption("暂无可排序的值。")
+                else:
+                    selected_value = st.selectbox(
+                        "选择要移动的值",
+                        row_order_values,
+                        key="pivot_row_order_selected",
+                    )
+                    move_up, move_down = st.columns(2)
+                    if move_up.button("上移", key="pivot_row_order_up"):
+                        new_order = list(row_order_values)
+                        idx_pos = new_order.index(selected_value)
+                        if idx_pos > 0:
+                            new_order[idx_pos - 1], new_order[idx_pos] = (
+                                new_order[idx_pos],
+                                new_order[idx_pos - 1],
+                            )
+                            st.session_state["pivot_row_order_values"] = new_order
+                            row_order_values = new_order
+                    if move_down.button("下移", key="pivot_row_order_down"):
+                        new_order = list(row_order_values)
+                        idx_pos = new_order.index(selected_value)
+                        if idx_pos < len(new_order) - 1:
+                            new_order[idx_pos + 1], new_order[idx_pos] = (
+                                new_order[idx_pos],
+                                new_order[idx_pos + 1],
+                            )
+                            st.session_state["pivot_row_order_values"] = new_order
+                            row_order_values = new_order
+                    st.caption("当前顺序：" + " → ".join(row_order_values))
+
         if idx and col and val and aggs:
             # 1. 透视表
             try:
-                p_src = final_df.copy()
-                for v in val:
-                    p_src[v] = pd.to_numeric(p_src[v], errors="coerce")
-
-                # 为每个值字段指定一组聚合函数，支持多聚合
-                aggfunc_map = {
-                    v: [AGG_METHODS.get(a, "mean") for a in aggs] for v in val
-                }
-                pivot = pd.pivot_table(
-                    p_src,
-                    index=idx,
-                    columns=col,
-                    values=val,
-                    aggfunc=aggfunc_map,
-                )
-                st.dataframe(pivot, width="stretch")
-                st.download_button(
-                    "📥 下载透视表",
-                    df_to_csv_bytes(pivot, index=True),
-                    "pivot_table_multi_agg.csv",
-                )
+                view_mode = st.session_state.get("pivot_view_mode", "classic")
+                if view_mode == "nested":
+                    nested_data = render_pivot_nested(
+                        final_df,
+                        index_cols=idx,
+                        column_cols=col,
+                        value_cols=val,
+                        agg_names=aggs,
+                        row_order=row_order_values,
+                    )
+                    st.download_button(
+                        "📥 下载嵌套透视表（Excel）",
+                        nested_pivot_to_excel_bytes(nested_data),
+                        "pivot_table_nested.xlsx",
+                    )
+                else:
+                    pivot = render_pivot_classic(
+                        final_df,
+                        index_cols=idx,
+                        column_cols=col,
+                        value_cols=val,
+                        agg_names=aggs,
+                        row_order=row_order_values,
+                    )
+                    st.download_button(
+                        "📥 下载透视表",
+                        df_to_csv_bytes(pivot, index=True),
+                        "pivot_table_multi_agg.csv",
+                    )
             except Exception as e:
                 st.error(f"透视失败: {e}")
 
