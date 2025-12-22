@@ -22,6 +22,11 @@ from utils import (
 from analysis_methods import CALC_METHODS, AGG_METHODS
 # 引入独立的图表组件
 from charts.classic import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
+from charts.boxplot import (
+    build_boxplot_matrix_fig,
+    compute_boxplot_range,
+    render_boxplot_fig,
+)
 from charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
@@ -305,6 +310,7 @@ def main() -> None:
         else:
             st.session_state.pop("uniform_line_aggs", None)
 
+
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
         st.session_state.pop("selected_subject_id", None)
@@ -559,6 +565,7 @@ def main() -> None:
         normalize_pivot_selection("pivot_index")
         normalize_pivot_selection("pivot_columns")
         normalize_pivot_selection("pivot_values")
+
 
         def sync_pivot_row_order(
             field: str, available_values: list[str]
@@ -875,14 +882,16 @@ def main() -> None:
                         value_col = val[0]
                         chart_type = st.radio(
                             "图表类型",
-                            ["经典", "统一坐标"],
+                            ["经典", "统一坐标", "箱线图"],
                             horizontal=True,
                             key="chart_type_mode",
                         )
 
                         use_uniform_chart = chart_type == "统一坐标"
+                        use_boxplot_chart = chart_type == "箱线图"
                         uniform_x_range = None
                         uniform_y_max = None
+                        boxplot_y_range = None
                         if use_uniform_chart:
                             st.markdown(
                                 """
@@ -901,12 +910,17 @@ def main() -> None:
                                 """,
                                 unsafe_allow_html=True,
                             )
+                        if use_uniform_chart:
                             uniform_x_range, uniform_y_max = compute_uniform_axes(
                                 final_df, row_key_cols, col_key_cols, value_col
                             )
                             if uniform_y_max <= 0:
                                 uniform_x_range = None
                                 uniform_y_max = None
+                        if use_boxplot_chart:
+                            boxplot_y_range = compute_boxplot_range(
+                                final_df, value_col
+                            )
 
                         agg_names_for_plot = aggs[:2]
                         agg_funcs_for_plot = [
@@ -940,169 +954,252 @@ def main() -> None:
                         "#17becf",
                     ]
 
-                    max_cols_per_row = 3
-
-                    def render_cell_chart(
-                        row_key: dict,
-                        col_key: dict,
-                        row_idx: int,
-                        col_idx: int,
-                        chart_color: str,
-                    ) -> None:
-                        nonlocal count
-
-                        cell = final_df
-                        for col_name, v in row_key.items():
-                            cell = cell[cell[col_name].astype(str) == v]
-                        for col_name, v in col_key.items():
-                            cell = cell[cell[col_name].astype(str) == v]
-
-                        if cell.empty:
-                            return
-
-                        title_parts = [
-                            f"{k}={row_key[k]}" for k in row_key_cols if k in row_key
-                        ] + [
-                            f"{k}={col_key[k]}" for k in col_key_cols if k in col_key
-                        ]
-                        title = "<br>".join(title_parts) if title_parts else "(All)"
-                        title_html = "<br>".join(
-                            [html.escape(p) for p in title_parts]
-                        ) if title_parts else "(All)"
-                        internal_title = ""
-                        key_suffix = f"r{row_idx}_c{col_idx}"
-
-                        if use_uniform_chart:
-                            fig = build_uniform_spaghetti_fig(
-                                df=cell,
-                                subj_col=subj_col,
-                                value_col=value_col,
-                                title=internal_title,
-                                x_range=uniform_x_range,
-                                y_max_count=uniform_y_max,
-                                agg_funcs=agg_funcs_for_plot,
-                                agg_names=agg_names_for_plot,
-                                marker_color=chart_color,
-                            )
-                        else:
-                            fig = build_spaghetti_fig(
-                                df=cell,
-                                subj_col=subj_col,
-                                value_col=value_col,
-                                title=internal_title,
-                                agg_func=actual_func_for_plot,
-                                agg_name=primary_agg_name,
-                                marker_color=chart_color,
-                            )
-                        if fig is None:
-                            return
-
-                        st.markdown(
-                            (
-                                "<div style='text-align:center;"
-                                "font-weight:600;font-size:16px;"
-                                "line-height:1.2;margin-bottom:8px;'>"
-                                f"{title_html}</div>"
-                            ),
-                            unsafe_allow_html=True,
-                        )
-
-                        # -------------------------------------------------------
-                        # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
-                        # -------------------------------------------------------
-                        # 在 render 之前，先克隆一份“干净”的 Figure 用于导出。
-                        # 这样无论 st.plotly_chart 对 fig 做了什么(如注入JS回调)，
-                        # 导出用的 fig_for_export 永远是纯净的。
-                        fig_for_export = copy.deepcopy(fig)
-
-                        legend_items = []
-                        meta = getattr(fig.layout, "meta", None)
-                        if isinstance(meta, dict):
-                            legend_items = meta.get("legend_items", [])
-
-                        if use_uniform_chart:
-                            render_uniform_spaghetti_fig(
-                                fig, key=f"c_{key_suffix}"
-                            )
-                            if legend_items:
-                                legend_lines = []
-                                for item in legend_items:
-                                    dash_style = (
-                                        "dashed"
-                                        if item.get("dash") == "dash"
-                                        else "solid"
-                                    )
-                                    label_text = html.escape(
-                                        str(item.get("label", "Agg"))
-                                    )
-                                    value_text = item.get("value")
-                                    try:
-                                        value_fmt = f"{float(value_text):.2f}"
-                                    except Exception:
-                                        value_fmt = "-"
-                                    legend_lines.append(
-                                        "<div style='display:flex;"
-                                        "justify-content:center;align-items:center;"
-                                        "gap:8px;font-size:12px;color:#c00;"
-                                        "line-height:1.2;margin-top:2px;'>"
-                                        f"<span style='display:inline-block;"
-                                        f"width:32px;border-top:3px {dash_style} #c00;'></span>"
-                                        f"<span>{label_text}: {value_fmt}</span>"
-                                        "</div>"
-                                    )
-                                st.markdown(
-                                    (
-                                        "<div style='margin-top:4px;'>"
-                                        + "".join(legend_lines)
-                                        + "</div>"
-                                    ),
-                                    unsafe_allow_html=True,
+                    if use_boxplot_chart:
+                        col_group_labels = []
+                        for ck in col_keys:
+                            if col_key_cols:
+                                label = " / ".join(
+                                    [
+                                        html.escape(str(ck.get(c, "")))
+                                        for c in col_key_cols
+                                    ]
                                 )
-                        else:
-                            render_spaghetti_fig(fig, key=f"c_{key_suffix}")
+                            else:
+                                label = "All"
+                            col_group_labels.append(label)
 
-                        all_figs.append(
-                            {
-                                "title": title,
-                                "title_html": title_html,
-                                "fig": fig_for_export,
-                                "legend_items": legend_items,
-                                "chart_type": (
-                                    "uniform" if use_uniform_chart else "classic"
-                                ),
-                            }
+                        visible_labels = col_group_labels
+                        if len(col_group_labels) > 1:
+                            visible_labels = st.multiselect(
+                                "显示列组",
+                                options=col_group_labels,
+                                default=col_group_labels,
+                                key="boxplot_visible_cols",
+                            )
+                            if not visible_labels:
+                                st.info("请至少选择一个列组以显示箱线图。")
+                                visible_labels = []
+
+                        filtered_col_keys = [
+                            ck
+                            for ck, label in zip(col_keys, col_group_labels)
+                            if label in visible_labels
+                        ]
+
+                        combo_keys = []
+                        for rk in row_keys:
+                            for ck in filtered_col_keys:
+                                combo = {}
+                                combo.update(rk)
+                                combo.update(ck)
+                                combo_keys.append(combo)
+                        if limit and combo_keys:
+                            combo_keys = combo_keys[:limit]
+
+                        fig = build_boxplot_matrix_fig(
+                            df=final_df,
+                            subj_col=subj_col,
+                            value_col=value_col,
+                            row_key_cols=row_key_cols,
+                            col_key_cols=col_key_cols,
+                            row_keys=row_keys,
+                            col_keys=filtered_col_keys,
+                            combo_keys=combo_keys,
+                            y_range=boxplot_y_range,
+                            color_labels=col_group_labels,
                         )
-                        count += 1
+                        if fig is not None:
+                            fig_for_export = copy.deepcopy(fig)
+                            render_boxplot_fig(fig, key="c_boxplot_all")
+                            all_figs.append(
+                                {
+                                    "title": "",
+                                    "title_html": "",
+                                    "fig": fig_for_export,
+                                    "legend_items": [],
+                                    "chart_type": "boxplot",
+                                }
+                            )
+                            count = 1
+                    else:
+                        max_cols_per_row = 3
 
-                    stop_render = False
-                    for i, rk in enumerate(row_keys):
-                        if stop_render:
-                            break
-                        group_color = color_palette[i % len(color_palette)]
+                        def render_cell_chart(
+                            row_key: dict,
+                            col_key: dict,
+                            row_idx: int,
+                            col_idx: int,
+                            chart_color: str,
+                        ) -> None:
+                            nonlocal count
 
-                        if use_uniform_chart:
-                            for chunk_start in range(0, len(col_keys), max_cols_per_row):
-                                if stop_render:
-                                    break
-                                chunk = col_keys[
-                                    chunk_start : chunk_start + max_cols_per_row
-                                ]
-                                cols = st.columns(max_cols_per_row)
-                                for col_pos, ck in enumerate(chunk):
+                            cell = final_df
+                            for col_name, v in row_key.items():
+                                cell = cell[cell[col_name].astype(str) == v]
+                            for col_name, v in col_key.items():
+                                cell = cell[cell[col_name].astype(str) == v]
+
+                            if cell.empty:
+                                return
+
+                            title_parts = [
+                                f"{k}={row_key[k]}"
+                                for k in row_key_cols
+                                if k in row_key
+                            ] + [
+                                f"{k}={col_key[k]}"
+                                for k in col_key_cols
+                                if k in col_key
+                            ]
+                            title = (
+                                "<br>".join(title_parts)
+                                if title_parts
+                                else "(All)"
+                            )
+                            title_html = "<br>".join(
+                                [html.escape(p) for p in title_parts]
+                            ) if title_parts else "(All)"
+                            internal_title = ""
+                            key_suffix = f"r{row_idx}_c{col_idx}"
+
+                            if use_uniform_chart:
+                                fig = build_uniform_spaghetti_fig(
+                                    df=cell,
+                                    subj_col=subj_col,
+                                    value_col=value_col,
+                                    title=internal_title,
+                                    x_range=uniform_x_range,
+                                    y_max_count=uniform_y_max,
+                                    agg_funcs=agg_funcs_for_plot,
+                                    agg_names=agg_names_for_plot,
+                                    marker_color=chart_color,
+                                )
+                            else:
+                                fig = build_spaghetti_fig(
+                                    df=cell,
+                                    subj_col=subj_col,
+                                    value_col=value_col,
+                                    title=internal_title,
+                                    agg_func=actual_func_for_plot,
+                                    agg_name=primary_agg_name,
+                                    marker_color=chart_color,
+                                )
+                            if fig is None:
+                                return
+
+                            st.markdown(
+                                (
+                                    "<div style='text-align:center;"
+                                    "font-weight:600;font-size:16px;"
+                                    "line-height:1.2;margin-bottom:8px;'>"
+                                    f"{title_html}</div>"
+                                ),
+                                unsafe_allow_html=True,
+                            )
+
+                            # -------------------------------------------------------
+                            # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
+                            # -------------------------------------------------------
+                            # 在 render 之前，先克隆一份“干净”的 Figure 用于导出。
+                            # 这样无论 st.plotly_chart 对 fig 做了什么(如注入JS回调)，
+                            # 导出用的 fig_for_export 永远是纯净的。
+                            fig_for_export = copy.deepcopy(fig)
+
+                            legend_items = []
+                            meta = getattr(fig.layout, "meta", None)
+                            if isinstance(meta, dict):
+                                legend_items = meta.get("legend_items", [])
+
+                            if use_uniform_chart:
+                                render_uniform_spaghetti_fig(
+                                    fig, key=f"c_{key_suffix}"
+                                )
+                                if legend_items:
+                                    legend_lines = []
+                                    for item in legend_items:
+                                        dash_style = (
+                                            "dashed"
+                                            if item.get("dash") == "dash"
+                                            else "solid"
+                                        )
+                                        label_text = html.escape(
+                                            str(item.get("label", "Agg"))
+                                        )
+                                        value_text = item.get("value")
+                                        try:
+                                            value_fmt = (
+                                                f"{float(value_text):.2f}"
+                                            )
+                                        except Exception:
+                                            value_fmt = "-"
+                                        legend_lines.append(
+                                            "<div style='display:flex;"
+                                            "justify-content:center;align-items:center;"
+                                            "gap:8px;font-size:12px;color:#c00;"
+                                            "line-height:1.2;margin-top:2px;'>"
+                                            f"<span style='display:inline-block;"
+                                            f"width:32px;border-top:3px {dash_style} #c00;'></span>"
+                                            f"<span>{label_text}: {value_fmt}</span>"
+                                            "</div>"
+                                        )
+                                    st.markdown(
+                                        (
+                                            "<div style='margin-top:4px;'>"
+                                            + "".join(legend_lines)
+                                            + "</div>"
+                                        ),
+                                        unsafe_allow_html=True,
+                                    )
+                            else:
+                                render_spaghetti_fig(fig, key=f"c_{key_suffix}")
+
+                            all_figs.append(
+                                {
+                                    "title": title,
+                                    "title_html": title_html,
+                                    "fig": fig_for_export,
+                                    "legend_items": legend_items,
+                                    "chart_type": (
+                                        "uniform"
+                                        if use_uniform_chart
+                                        else "classic"
+                                    ),
+                                }
+                            )
+                            count += 1
+
+                        stop_render = False
+                        for i, rk in enumerate(row_keys):
+                            if stop_render:
+                                break
+                            group_color = color_palette[i % len(color_palette)]
+
+                            if use_uniform_chart:
+                                for chunk_start in range(
+                                    0, len(col_keys), max_cols_per_row
+                                ):
+                                    if stop_render:
+                                        break
+                                    chunk = col_keys[
+                                        chunk_start : chunk_start
+                                        + max_cols_per_row
+                                    ]
+                                    cols = st.columns(max_cols_per_row)
+                                    for col_pos, ck in enumerate(chunk):
+                                        if count >= limit:
+                                            stop_render = True
+                                            break
+                                        j = chunk_start + col_pos
+                                        with cols[col_pos]:
+                                            render_cell_chart(
+                                                rk, ck, i, j, group_color
+                                            )
+                            else:
+                                for j, ck in enumerate(col_keys):
                                     if count >= limit:
                                         stop_render = True
                                         break
-                                    j = chunk_start + col_pos
-                                    with cols[col_pos]:
-                                        render_cell_chart(
-                                            rk, ck, i, j, group_color
-                                        )
-                        else:
-                            for j, ck in enumerate(col_keys):
-                                if count >= limit:
-                                    stop_render = True
-                                    break
-                                render_cell_chart(rk, ck, i, j, group_color)
+                                    render_cell_chart(rk, ck, i, j, group_color)
 
                     # 在图表区域顶部给出生成数量和时间提示
                     from datetime import datetime
