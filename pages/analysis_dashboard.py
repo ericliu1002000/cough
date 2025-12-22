@@ -1,3 +1,4 @@
+import html
 import json
 from typing import Any, Dict, List
 
@@ -18,8 +19,8 @@ from utils import (
 # 引入插件系统
 from analysis_methods import CALC_METHODS, AGG_METHODS
 # 引入独立的图表组件
-from charts import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
-from charts_uniform import (
+from charts.classic import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
+from charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
     render_uniform_spaghetti_fig,
@@ -552,7 +553,7 @@ def main() -> None:
                     charts_info_placeholder = st.empty()
 
                     # 收集当前页面实际绘制的所有图表，用于 HTML 导出
-                    all_figs: list[tuple[str, Any]] = []
+                    all_figs: list[dict[str, Any]] = []
 
                     # 计算行维度和列维度的所有组合键（多维）
                     row_key_cols = idx
@@ -618,6 +619,23 @@ def main() -> None:
                         uniform_x_range = None
                         uniform_y_max = None
                         if use_uniform_chart:
+                            st.markdown(
+                                """
+                                <style>
+                                div[data-testid="stPlotlyChart"] > div {
+                                    width: 100% !important;
+                                    aspect-ratio: 1 / 1;
+                                }
+                                div[data-testid="stPlotlyChart"] .js-plotly-plot,
+                                div[data-testid="stPlotlyChart"] .plot-container,
+                                div[data-testid="stPlotlyChart"] .svg-container {
+                                    width: 100% !important;
+                                    height: 100% !important;
+                                }
+                                </style>
+                                """,
+                                unsafe_allow_html=True,
+                            )
                             uniform_x_range, uniform_y_max = compute_uniform_axes(
                                 final_df, row_key_cols, col_key_cols, value_col
                             )
@@ -667,13 +685,16 @@ def main() -> None:
                         if cell.empty:
                             return
 
-                        row_title = ", ".join(
-                            [f"{k}={row_key[k]}" for k in row_key_cols]
-                        ) or "(All)"
-                        col_title = ", ".join(
-                            [f"{k}={col_key[k]}" for k in col_key_cols]
-                        ) or "(All)"
-                        title = f"{row_title} | {col_title}"
+                        title_parts = [
+                            f"{k}={row_key[k]}" for k in row_key_cols if k in row_key
+                        ] + [
+                            f"{k}={col_key[k]}" for k in col_key_cols if k in col_key
+                        ]
+                        title = "<br>".join(title_parts) if title_parts else "(All)"
+                        title_html = "<br>".join(
+                            [html.escape(p) for p in title_parts]
+                        ) if title_parts else "(All)"
+                        internal_title = ""
                         key_suffix = f"r{row_idx}_c{col_idx}"
 
                         if use_uniform_chart:
@@ -681,7 +702,7 @@ def main() -> None:
                                 df=cell,
                                 subj_col=subj_col,
                                 value_col=value_col,
-                                title=title,
+                                title=internal_title,
                                 x_range=uniform_x_range,
                                 y_max_count=uniform_y_max,
                                 agg_funcs=agg_funcs_for_plot,
@@ -693,13 +714,23 @@ def main() -> None:
                                 df=cell,
                                 subj_col=subj_col,
                                 value_col=value_col,
-                                title=title,
+                                title=internal_title,
                                 agg_func=actual_func_for_plot,
                                 agg_name=primary_agg_name,
                                 marker_color=chart_color,
                             )
                         if fig is None:
                             return
+
+                        st.markdown(
+                            (
+                                "<div style='text-align:center;"
+                                "font-weight:600;font-size:16px;"
+                                "line-height:1.2;margin-bottom:8px;'>"
+                                f"{title_html}</div>"
+                            ),
+                            unsafe_allow_html=True,
+                        )
 
                         # -------------------------------------------------------
                         # 🚀 关键点 2: 深拷贝隔离 (Deep Copy Isolation)
@@ -709,13 +740,63 @@ def main() -> None:
                         # 导出用的 fig_for_export 永远是纯净的。
                         fig_for_export = copy.deepcopy(fig)
 
+                        legend_items = []
+                        meta = getattr(fig.layout, "meta", None)
+                        if isinstance(meta, dict):
+                            legend_items = meta.get("legend_items", [])
+
                         if use_uniform_chart:
                             render_uniform_spaghetti_fig(
                                 fig, key=f"c_{key_suffix}"
                             )
+                            if legend_items:
+                                legend_lines = []
+                                for item in legend_items:
+                                    dash_style = (
+                                        "dashed"
+                                        if item.get("dash") == "dash"
+                                        else "solid"
+                                    )
+                                    label_text = html.escape(
+                                        str(item.get("label", "Agg"))
+                                    )
+                                    value_text = item.get("value")
+                                    try:
+                                        value_fmt = f"{float(value_text):.2f}"
+                                    except Exception:
+                                        value_fmt = "-"
+                                    legend_lines.append(
+                                        "<div style='display:flex;"
+                                        "justify-content:center;align-items:center;"
+                                        "gap:8px;font-size:12px;color:#c00;"
+                                        "line-height:1.2;margin-top:2px;'>"
+                                        f"<span style='display:inline-block;"
+                                        f"width:32px;border-top:3px {dash_style} #c00;'></span>"
+                                        f"<span>{label_text}: {value_fmt}</span>"
+                                        "</div>"
+                                    )
+                                st.markdown(
+                                    (
+                                        "<div style='margin-top:4px;'>"
+                                        + "".join(legend_lines)
+                                        + "</div>"
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
                         else:
                             render_spaghetti_fig(fig, key=f"c_{key_suffix}")
-                        all_figs.append((title, fig))
+
+                        all_figs.append(
+                            {
+                                "title": title,
+                                "title_html": title_html,
+                                "fig": fig_for_export,
+                                "legend_items": legend_items,
+                                "chart_type": (
+                                    "uniform" if use_uniform_chart else "classic"
+                                ),
+                            }
+                        )
                         count += 1
 
                     stop_render = False
@@ -763,12 +844,12 @@ def main() -> None:
 
                             # 【DEBUG START】 打印第一张图的 X 轴数据，看看是数值还是下标
                             if all_figs:
-                                first_fig = all_figs[0][1]
+                                first_fig = all_figs[0]["fig"]
                                 # 尝试获取 X 轴数据（通常在 data[0].x）
                                 try:
                                     x_sample = first_fig.data[0].x
                                     print(f"--- [DEBUG] Export Check ---")
-                                    print(f"First Chart Title: {all_figs[0][0]}")
+                                    print(f"First Chart Title: {all_figs[0]['title']}")
                                     print(f"X Data Type: {type(x_sample)}")
                                     # 打印前 10 个值
                                     print(f"X Data Sample: {list(x_sample)[:10] if hasattr(x_sample, '__iter__') else x_sample}")
@@ -777,18 +858,98 @@ def main() -> None:
                                     print(f"--- [DEBUG] Error reading x data: {e} ---")
                             # 【DEBUG END】
 
-                            for title, fig in all_figs:
+                            use_uniform_layout = (
+                                all_figs
+                                and all_figs[0].get("chart_type") == "uniform"
+                            )
+                            layout_class = (
+                                "charts-grid" if use_uniform_layout else "charts-stack"
+                            )
+
+                            for item in all_figs:
+                                fig = item["fig"]
+                                title_html = item.get("title_html", "")
+                                legend_items = item.get("legend_items", [])
                                 fig_html = fig.to_html(
-                                    full_html=False, include_plotlyjs=False
+                                    full_html=False,
+                                    include_plotlyjs=False,
+                                    config={"responsive": True},
                                 )
-                                html_blocks.append(f"<h3>{title}</h3>\n{fig_html}")
+
+                                legend_lines = []
+                                for legend_item in legend_items:
+                                    dash_style = (
+                                        "dashed"
+                                        if legend_item.get("dash") == "dash"
+                                        else "solid"
+                                    )
+                                    label_text = html.escape(
+                                        str(legend_item.get("label", "Agg"))
+                                    )
+                                    value_text = legend_item.get("value")
+                                    try:
+                                        value_fmt = f"{float(value_text):.2f}"
+                                    except Exception:
+                                        value_fmt = "-"
+                                    legend_lines.append(
+                                        "<div class='legend-line'>"
+                                        f"<span class='legend-rule {dash_style}'></span>"
+                                        f"<span>{label_text}: {value_fmt}</span>"
+                                        "</div>"
+                                    )
+                                legend_html = (
+                                    "<div class='chart-legend'>"
+                                    + "".join(legend_lines)
+                                    + "</div>"
+                                    if legend_lines
+                                    else ""
+                                )
+
+                                html_blocks.append(
+                                    "<div class='chart-card'>"
+                                    f"<div class='chart-title'>{title_html}</div>"
+                                    f"<div class='chart-wrap'>{fig_html}</div>"
+                                    f"{legend_html}"
+                                    "</div>"
+                                )
 
                             full_html = (
                                 "<html><head>"
                                 "<meta charset='utf-8' />"
+                                "<style>"
+                                "body{font-family:Arial,Helvetica,sans-serif;}"
+                                ".charts-grid{display:grid;grid-template-columns:"
+                                "repeat(3,minmax(0,1fr));gap:16px;}"
+                                ".charts-stack{display:flex;flex-direction:column;"
+                                "gap:16px;}"
+                                ".chart-card{width:100%;}"
+                                ".chart-title{text-align:center;font-weight:600;"
+                                "font-size:16px;line-height:1.2;margin-bottom:8px;}"
+                                ".chart-wrap{width:100%;}"
+                                ".charts-grid .chart-wrap{aspect-ratio:1/1;}"
+                                ".chart-wrap .js-plotly-plot,"
+                                ".chart-wrap .plot-container,"
+                                ".chart-wrap .svg-container{width:100% !important;"
+                                "height:100% !important;}"
+                                ".chart-legend{margin-top:4px;}"
+                                ".legend-line{display:flex;justify-content:center;"
+                                "align-items:center;gap:8px;font-size:12px;"
+                                "color:#c00;line-height:1.2;margin-top:2px;}"
+                                ".legend-rule{display:inline-block;width:32px;"
+                                "border-top:3px solid #c00;}"
+                                ".legend-rule.dashed{border-top-style:dashed;}"
+                                "@media (max-width: 900px){"
+                                ".charts-grid{grid-template-columns:repeat(2,minmax(0,1fr));}"
+                                "}"
+                                "@media (max-width: 600px){"
+                                ".charts-grid{grid-template-columns:1fr;}"
+                                "}"
+                                "</style>"
                                 "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
                                 "</head><body>"
-                                + "\n<hr/>\n".join(html_blocks)
+                                + f"<div class='{layout_class}'>"
+                                + "\n".join(html_blocks)
+                                + "</div>"
                                 + "</body></html>"
                             )
 
@@ -828,6 +989,11 @@ def main() -> None:
                                 st.switch_page("pages/subject_profile.py")
                             except Exception:
                                 st.info("请在左侧页面列表中打开“受试者档案”页面。")
+                        
+                        st.link_button(
+                            "🔍 在新标签页打开受试者档案",
+                            f"/subject_profile?subject_id={selected_id}",
+                        )
 
 if __name__ == "__main__":
     main()

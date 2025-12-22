@@ -89,14 +89,38 @@ def build_spaghetti_fig(
             pass
 
     # 5. 布局
-    fig.update_layout(
-        title=title,
+    title_lines = 0
+    if isinstance(title, str) and title:
+        title_lines = title.count("<br>") + 1
+    title_font_size = 12
+    title_line_height = title_font_size + 4
+    title_pad_bottom = 10
+    top_margin = (
+        max(20, 12 + title_lines * title_line_height + title_pad_bottom)
+        if title_lines
+        else 20
+    )
+
+    layout_kwargs = dict(
         xaxis_title=value_col,
         yaxis_title=subj_col,
         height=400,
-        margin=dict(l=20, r=20, t=40, b=20),
-        yaxis=dict(type='category') # 显式声明 Y 轴为类别，防止自动识别为数值
+        margin=dict(l=20, r=20, t=top_margin, b=20),
+        yaxis=dict(type='category', automargin=True, title_standoff=30),
     )
+    if title_lines:
+        layout_kwargs["title"] = dict(
+            text=title,
+            x=0.5,
+            xanchor="center",
+            y=0.98,
+            yanchor="top",
+            pad=dict(b=title_pad_bottom),
+        )
+        layout_kwargs["title_font"] = dict(size=title_font_size)
+
+    fig.update_layout(**layout_kwargs)
+    fig.update_xaxes(automargin=True, title_standoff=12)
 
     return fig
 
