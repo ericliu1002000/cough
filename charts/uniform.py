@@ -193,7 +193,7 @@ def render_uniform_spaghetti_fig(fig: "go.Figure", key: str) -> None:
     st.plotly_chart(
         fig,
         # 让图表宽度跟随列宽，并由 CSS 固定为正方形
-        use_container_width=True,
+        width="stretch",
         on_select="rerun",
         selection_mode="points",
         key=key,

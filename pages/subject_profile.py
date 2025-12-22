@@ -7,7 +7,11 @@ from sqlalchemy import text
 
 from settings import get_engine
 from utils import load_table_metadata, get_id_column
-from exports.subject_profile import to_csv_sections_bytes, to_excel_bytes
+from exports.subject_profile import (
+    to_csv_sections_bytes,
+    to_excel_bytes,
+    to_excel_sections_bytes,
+)
 
 
 st.set_page_config(page_title="受试者档案", layout="wide")
@@ -17,18 +21,10 @@ st.title("🧬 受试者全表档案")
 def _get_query_param(name: str) -> Optional[str]:
     try:
         params = st.query_params
-        if isinstance(params, dict):
+        if hasattr(params, "get"):
             raw = params.get(name)
-            if isinstance(raw, list):
-                return raw[0] if raw else None
-            if raw is not None:
-                return str(raw)
-    except Exception:
-        pass
-
-    try:
-        params = st.experimental_get_query_params()
-        raw = params.get(name)
+        else:
+            raw = params[name] if name in params else None
         if isinstance(raw, list):
             return raw[0] if raw else None
         if raw is not None:
@@ -132,7 +128,7 @@ def main() -> None:
     st.dataframe(summary_df, width="stretch", hide_index=True)
 
     st.markdown("#### 📥 导出数据")
-    export_cols = st.columns(2)
+    export_cols = st.columns(3)
     with export_cols[0]:
         excel_bytes = to_excel_bytes(subject_tables)
         st.download_button(
@@ -142,6 +138,16 @@ def main() -> None:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     with export_cols[1]:
+        excel_sections_bytes = to_excel_sections_bytes(
+            subject_tables, subject_id=str(subject_id)
+        )
+        st.download_button(
+            "⬇️ 下载 Excel（分表）",
+            data=excel_sections_bytes,
+            file_name=f"subject_{subject_id}_tables_sections.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    with export_cols[2]:
         csv_bytes = to_csv_sections_bytes(subject_tables)
         st.download_button(
             "⬇️ 下载 CSV（分表）",

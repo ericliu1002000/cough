@@ -286,6 +286,13 @@ def main() -> None:
         st.session_state["pivot_row_order_values"] = list(
             row_order_cfg.get("values", [])
         )
+        col_order_cfg = p_cfg.get("col_order", {})
+        if not isinstance(col_order_cfg, dict):
+            col_order_cfg = {}
+        st.session_state["pivot_col_order"] = {
+            k: list(v) if isinstance(v, (list, tuple, set)) else []
+            for k, v in col_order_cfg.items()
+        }
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -477,6 +484,7 @@ def main() -> None:
                             "pivot_row_order_values", []
                         ),
                     },
+                    "col_order": st.session_state.get("pivot_col_order", {}),
                 },
             }
             save_calculation_config(selected_row["setup_name"], payload)
@@ -548,6 +556,23 @@ def main() -> None:
             new_order = [v for v in stored_values if v in available_values]
             new_order.extend([v for v in available_values if v not in new_order])
             st.session_state["pivot_row_order_values"] = new_order
+            return new_order
+
+        def sync_pivot_col_order(
+            field: str, available_values: list[str]
+        ) -> list[str]:
+            col_order_map = st.session_state.get("pivot_col_order", {})
+            if not isinstance(col_order_map, dict):
+                col_order_map = {}
+
+            stored_values = col_order_map.get(field, [])
+            if not isinstance(stored_values, list):
+                stored_values = list(stored_values)
+
+            new_order = [v for v in stored_values if v in available_values]
+            new_order.extend([v for v in available_values if v not in new_order])
+            col_order_map[field] = new_order
+            st.session_state["pivot_col_order"] = col_order_map
             return new_order
         
         c1, c2, c3, c4 = st.columns(4)
@@ -640,6 +665,76 @@ def main() -> None:
                             row_order_values = new_order
                     st.caption("当前顺序：" + " → ".join(row_order_values))
 
+        col_order_map = st.session_state.get("pivot_col_order", {})
+        if not isinstance(col_order_map, dict):
+            col_order_map = {}
+        col_order_map = {k: v for k, v in col_order_map.items() if k in col}
+        st.session_state["pivot_col_order"] = col_order_map
+
+        if col:
+            with st.expander("列维度顺序", expanded=False):
+                for col_idx, col_field in enumerate(col):
+                    if col_field in final_df.columns:
+                        col_values = (
+                            final_df[col_field]
+                            .dropna()
+                            .astype(str)
+                            .drop_duplicates()
+                            .tolist()
+                        )
+                    else:
+                        col_values = []
+                    col_order_values = sync_pivot_col_order(
+                        col_field, col_values
+                    )
+                    st.markdown(f"**{col_field}**")
+                    if not col_order_values:
+                        st.caption("暂无可排序的值。")
+                        continue
+                    selected_col_value = st.selectbox(
+                        "选择要移动的值",
+                        col_order_values,
+                        key=f"pivot_col_order_selected_{col_idx}",
+                    )
+                    move_up, move_down = st.columns(2)
+                    if move_up.button(
+                        "上移", key=f"pivot_col_order_up_{col_idx}"
+                    ):
+                        new_order = list(col_order_values)
+                        idx_pos = new_order.index(selected_col_value)
+                        if idx_pos > 0:
+                            new_order[idx_pos - 1], new_order[idx_pos] = (
+                                new_order[idx_pos],
+                                new_order[idx_pos - 1],
+                            )
+                            latest_map = st.session_state.get(
+                                "pivot_col_order", {}
+                            )
+                            if not isinstance(latest_map, dict):
+                                latest_map = {}
+                            latest_map[col_field] = new_order
+                            st.session_state["pivot_col_order"] = latest_map
+                            col_order_values = new_order
+                    if move_down.button(
+                        "下移", key=f"pivot_col_order_down_{col_idx}"
+                    ):
+                        new_order = list(col_order_values)
+                        idx_pos = new_order.index(selected_col_value)
+                        if idx_pos < len(new_order) - 1:
+                            new_order[idx_pos + 1], new_order[idx_pos] = (
+                                new_order[idx_pos],
+                                new_order[idx_pos + 1],
+                            )
+                            latest_map = st.session_state.get(
+                                "pivot_col_order", {}
+                            )
+                            if not isinstance(latest_map, dict):
+                                latest_map = {}
+                            latest_map[col_field] = new_order
+                            st.session_state["pivot_col_order"] = latest_map
+                            col_order_values = new_order
+                    st.caption("当前顺序：" + " → ".join(col_order_values))
+
         if idx and col and val and aggs:
             # 1. 透视表
             try:
@@ -652,6 +747,7 @@ def main() -> None:
                         value_cols=val,
                         agg_names=aggs,
                         row_order=row_order_values,
+                        col_orders=st.session_state.get("pivot_col_order", {}),
                     )
                     st.download_button(
                         "📥 下载嵌套透视表（Excel）",
@@ -666,6 +762,7 @@ def main() -> None:
                         value_cols=val,
                         agg_names=aggs,
                         row_order=row_order_values,
+                        col_orders=st.session_state.get("pivot_col_order", {}),
                     )
                     st.download_button(
                         "📥 下载透视表",

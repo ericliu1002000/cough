@@ -26,7 +26,6 @@ def _format_value(val: object) -> str:
 
 def _build_nested_html(data: NestedPivotData) -> str:
     row_cols = data.row_key_cols
-    col_cols = data.col_key_cols
     value_cols = data.value_cols
     agg_names = data.agg_names
 
@@ -55,6 +54,7 @@ def _build_nested_html(data: NestedPivotData) -> str:
         f"<th class='pivot-row-header'>{html.escape(col)}</th>"
         for col in row_cols
     )
+    header_cells += "<th class='pivot-agg-header'>统计量</th>"
     header_cells += "".join(
         f"<th class='pivot-col-header'>{col_def['label_html']}</th>"
         for col_def in col_defs
@@ -62,31 +62,28 @@ def _build_nested_html(data: NestedPivotData) -> str:
     header_html = f"<tr>{header_cells}</tr>"
 
     body_rows = []
+    row_span = max(len(agg_names), 1)
     for row_key, row_tuple in zip(data.row_keys, data.row_key_tuples):
-        row_cells = "".join(
-            f"<th class='pivot-row-header'>{html.escape(str(row_key[col]))}</th>"
-            for col in row_cols
-        )
-        for col_def in col_defs:
-            mini_rows = []
-            for agg_name in agg_names:
+        for agg_idx, agg_name in enumerate(agg_names):
+            row_cells = ""
+            if agg_idx == 0:
+                for col in row_cols:
+                    row_cells += (
+                        "<th class='pivot-row-header' "
+                        f"rowspan='{row_span}'>"
+                        f"{html.escape(str(row_key[col]))}</th>"
+                    )
+            row_cells += (
+                f"<td class='pivot-agg-name'>{html.escape(agg_name)}</td>"
+            )
+            for col_def in col_defs:
                 val = data.values.get(
                     (row_tuple, col_def["col_tuple"], col_def["value_col"], agg_name)
                 )
                 value_text = html.escape(_format_value(val))
-                mini_rows.append(
-                    "<tr>"
-                    f"<td class='pivot-agg-name'>{html.escape(agg_name)}</td>"
-                    f"<td class='pivot-agg-val'>{value_text}</td>"
-                    "</tr>"
-                )
-            mini_html = (
-                "<table class='pivot-mini-table'>"
-                + "".join(mini_rows)
-                + "</table>"
-            )
-            row_cells += f"<td class='pivot-cell'>{mini_html}</td>"
-        body_rows.append(f"<tr>{row_cells}</tr>")
+                row_cells += f"<td class='pivot-cell'>{value_text}</td>"
+            row_class = "pivot-group-start" if agg_idx == 0 else "pivot-group-row"
+            body_rows.append(f"<tr class='{row_class}'>{row_cells}</tr>")
 
     table_html = (
         "<div class='pivot-nested-wrapper'>"
@@ -106,6 +103,7 @@ def render_pivot_nested(
     value_cols: List[str],
     agg_names: List[str],
     row_order: List[str] | None = None,
+    col_orders: dict[str, list[str]] | None = None,
 ) -> NestedPivotData:
     data = build_nested_pivot_data(
         df,
@@ -114,6 +112,7 @@ def render_pivot_nested(
         value_cols=value_cols,
         agg_names=agg_names,
         row_order=row_order,
+        col_orders=col_orders,
     )
 
     if not data.row_keys or not data.col_keys:
@@ -149,32 +148,30 @@ def render_pivot_nested(
         background: #fbfbfb;
         text-align: left;
         white-space: nowrap;
+        vertical-align: middle;
     }
     .pivot-col-header {
-        min-width: 140px;
+        min-width: 120px;
     }
     .pivot-cell {
-        min-width: 140px;
-    }
-    .pivot-mini-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-    }
-    .pivot-mini-table td {
-        padding: 2px 4px;
-        border-bottom: 1px solid #e2e2e2;
-    }
-    .pivot-mini-table tr:last-child td {
-        border-bottom: none;
-    }
-    .pivot-agg-name {
-        color: #666;
-        white-space: nowrap;
-    }
-    .pivot-agg-val {
+        min-width: 120px;
         text-align: right;
         font-variant-numeric: tabular-nums;
+    }
+    .pivot-group-start th,
+    .pivot-group-start td {
+        border-top: 2px solid #c0c0c0;
+    }
+    .pivot-agg-header {
+        background: #f6f6f6;
+        text-align: center;
+        white-space: nowrap;
+    }
+    .pivot-agg-name {
+        background: #fafafa;
+        color: #444;
+        white-space: nowrap;
+        font-weight: 600;
     }
     </style>
     """

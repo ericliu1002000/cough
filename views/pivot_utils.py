@@ -45,6 +45,35 @@ def _order_row_keys(
     return ordered.drop(columns="_order")
 
 
+def _order_col_keys(
+    col_keys_df: pd.DataFrame,
+    col_key_cols: List[str],
+    col_orders: Dict[str, List[str]] | None,
+) -> pd.DataFrame:
+    if not col_key_cols or not col_orders or col_keys_df.empty:
+        return col_keys_df
+
+    ordered = col_keys_df.copy()
+    order_cols = []
+    for col in col_key_cols:
+        order_list = col_orders.get(col)
+        if not order_list:
+            continue
+        order_map = {val: idx for idx, val in enumerate(order_list)}
+        ordered_col = ordered[col].map(
+            lambda v: order_map.get(v, len(order_map))
+        )
+        order_col = f"_order_{col}"
+        ordered[order_col] = ordered_col
+        order_cols.append(order_col)
+
+    if not order_cols:
+        return col_keys_df
+
+    ordered = ordered.sort_values(order_cols, kind="stable")
+    return ordered.drop(columns=order_cols)
+
+
 def build_nested_pivot_data(
     df: pd.DataFrame,
     row_key_cols: List[str],
@@ -52,12 +81,19 @@ def build_nested_pivot_data(
     value_cols: List[str],
     agg_names: List[str],
     row_order: List[str] | None = None,
+    col_orders: Dict[str, List[str]] | None = None,
 ) -> NestedPivotData:
     row_key_cols = list(row_key_cols or [])
     col_key_cols = list(col_key_cols or [])
     value_cols = list(value_cols or [])
     agg_names = list(agg_names or [])
     row_order = [str(v) for v in row_order] if row_order else None
+    if col_orders:
+        col_orders = {
+            key: [str(v) for v in vals]
+            for key, vals in col_orders.items()
+            if isinstance(vals, (list, tuple, set))
+        }
 
     work_df = df.copy()
     key_cols = row_key_cols + col_key_cols
@@ -79,6 +115,7 @@ def build_nested_pivot_data(
 
     if col_key_cols:
         col_keys_df = work_df[col_key_cols].drop_duplicates()
+        col_keys_df = _order_col_keys(col_keys_df, col_key_cols, col_orders)
         col_keys = col_keys_df.to_dict(orient="records")
         col_key_tuples = [
             tuple(rec.get(col, "") for col in col_key_cols) for rec in col_keys
