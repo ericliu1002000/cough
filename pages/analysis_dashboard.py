@@ -27,6 +27,7 @@ from charts.boxplot import (
     compute_boxplot_range,
     render_boxplot_fig,
 )
+from charts.lineplot import build_pivot_line_fig, render_line_fig
 from charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
@@ -854,6 +855,79 @@ def main() -> None:
                         nested_pivot_to_excel_bytes(nested_data),
                         "pivot_table_nested.xlsx",
                     )
+                    if len(val) != 1:
+                        st.info("折线图仅支持单一值字段。")
+                    elif not col:
+                        st.info("折线图需要至少一个列维度。")
+                    else:
+                        st.markdown("#### 📈 折线图")
+                        line_items = []
+                        line_export_items = []
+                        value_col = val[0]
+                        row_cols = idx
+                        col_orders = st.session_state.get(
+                            "pivot_col_order", {}
+                        )
+                        row_order = row_order_values
+                        for agg_name in aggs:
+                            for col_field in col:
+                                fig = build_pivot_line_fig(
+                                    df=final_df,
+                                    value_col=value_col,
+                                    row_key_cols=row_cols,
+                                    col_field=col_field,
+                                    agg_name=agg_name,
+                                    row_order=row_order,
+                                    col_orders=col_orders,
+                                )
+                                if fig is None:
+                                    continue
+                                title = f"{col_field} | {agg_name}"
+                                line_items.append({"title": title, "fig": fig})
+                                line_export_items.append(
+                                    {
+                                        "title": title,
+                                        "title_html": html.escape(title),
+                                        "fig": copy.deepcopy(fig),
+                                        "legend_items": [],
+                                        "chart_type": "line",
+                                    }
+                                )
+                        if not line_items:
+                            st.info("暂无可绘制的折线图数据。")
+                        else:
+                            max_cols = 3
+                            for start in range(0, len(line_items), max_cols):
+                                row_items = line_items[
+                                    start : start + max_cols
+                                ]
+                                cols = st.columns(max_cols)
+                                for col_idx in range(max_cols):
+                                    if col_idx >= len(row_items):
+                                        continue
+                                    item = row_items[col_idx]
+                                    with cols[col_idx]:
+                                        st.markdown(f"**{item['title']}**")
+                                        render_line_fig(
+                                            item["fig"],
+                                            key=f"pivot_line_{start + col_idx}",
+                                        )
+
+                            if line_export_items:
+                                if st.button(
+                                    "📥 下载折线图 (HTML)",
+                                    key="btn_export_line_charts",
+                                ):
+                                    full_html = build_charts_export_html(
+                                        line_export_items
+                                    )
+                                    st.download_button(
+                                        "⬇️ 保存折线图 HTML",
+                                        data=full_html.encode("utf-8"),
+                                        file_name="pivot_line_charts.html",
+                                        mime="text/html",
+                                        key="btn_export_line_charts_download",
+                                    )
                 else:
                     pivot = render_pivot_classic(
                         final_df,
