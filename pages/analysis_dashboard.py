@@ -31,7 +31,7 @@ from charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
     render_uniform_spaghetti_fig,
-    resolve_uniform_line_aggs,
+    resolve_uniform_control_group,
 )
 from exports.charts import build_charts_export_html
 from exports.common import df_to_csv_bytes
@@ -298,17 +298,11 @@ def main() -> None:
             k: list(v) if isinstance(v, (list, tuple, set)) else []
             for k, v in col_order_cfg.items()
         }
-        line_aggs_cfg = p_cfg.get("uniform_line_aggs", [])
-        if isinstance(line_aggs_cfg, (list, tuple, set)):
-            line_aggs = [
-                a for a in line_aggs_cfg if a in AGG_METHODS
-            ]
-            if line_aggs:
-                st.session_state["uniform_line_aggs"] = line_aggs
-            else:
-                st.session_state.pop("uniform_line_aggs", None)
+        control_group_cfg = p_cfg.get("uniform_control_group")
+        if isinstance(control_group_cfg, dict):
+            st.session_state["uniform_control_group"] = control_group_cfg
         else:
-            st.session_state.pop("uniform_line_aggs", None)
+            st.session_state.pop("uniform_control_group", None)
 
 
         st.session_state.pop("raw_df", None)
@@ -508,8 +502,8 @@ def main() -> None:
                         ),
                     },
                     "col_order": st.session_state.get("pivot_col_order", {}),
-                    "uniform_line_aggs": st.session_state.get(
-                        "uniform_line_aggs", []
+                    "uniform_control_group": st.session_state.get(
+                        "uniform_control_group"
                     ),
                 },
             }
@@ -922,20 +916,15 @@ def main() -> None:
                                 final_df, value_col
                             )
 
-                        agg_names_for_plot = aggs[:2]
-                        agg_funcs_for_plot = [
-                            AGG_METHODS.get(name) for name in agg_names_for_plot
-                        ]
+                        control_group = None
                         if use_uniform_chart:
-                            (
-                                agg_names_for_plot,
-                                agg_funcs_for_plot,
-                            ) = resolve_uniform_line_aggs(
-                                agg_options,
-                                aggs,
-                                AGG_METHODS,
-                                key="uniform_line_aggs",
+                            control_group = resolve_uniform_control_group(
+                                col_key_cols,
+                                col_keys,
+                                st.session_state.get("uniform_control_group"),
+                                key="uniform_control_group",
                             )
+
                         # 绘图使用的聚合函数：取多选聚合函数中的第一个作为参考线
                         primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
                         actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
@@ -953,6 +942,36 @@ def main() -> None:
                         "#bcbd22",
                         "#17becf",
                     ]
+
+                    def build_row_key_sig(row_key: dict) -> str:
+                        if not row_key_cols:
+                            return "(All)"
+                        return "\x1f".join(
+                            [str(row_key.get(c, "")) for c in row_key_cols]
+                        )
+
+                    control_stats_by_row = {}
+                    if use_uniform_chart and control_group:
+                        for rk in row_keys:
+                            ctrl_df = final_df
+                            for col_name, v in rk.items():
+                                ctrl_df = ctrl_df[
+                                    ctrl_df[col_name].astype(str) == v
+                                ]
+                            for col_name, v in control_group.items():
+                                if col_name in ctrl_df.columns:
+                                    ctrl_df = ctrl_df[
+                                        ctrl_df[col_name].astype(str) == str(v)
+                                    ]
+                            vals = pd.to_numeric(
+                                ctrl_df[value_col], errors="coerce"
+                            ).dropna()
+                            if vals.empty:
+                                continue
+                            control_stats_by_row[build_row_key_sig(rk)] = (
+                                float(vals.mean()),
+                                float(vals.median()),
+                            )
 
                     if use_boxplot_chart:
                         col_group_labels = []
@@ -1063,6 +1082,14 @@ def main() -> None:
                             key_suffix = f"r{row_idx}_c{col_idx}"
 
                             if use_uniform_chart:
+                                control_mean = None
+                                control_median = None
+                                if control_group:
+                                    stats = control_stats_by_row.get(
+                                        build_row_key_sig(row_key)
+                                    )
+                                    if stats:
+                                        control_mean, control_median = stats
                                 fig = build_uniform_spaghetti_fig(
                                     df=cell,
                                     subj_col=subj_col,
@@ -1070,8 +1097,8 @@ def main() -> None:
                                     title=internal_title,
                                     x_range=uniform_x_range,
                                     y_max_count=uniform_y_max,
-                                    agg_funcs=agg_funcs_for_plot,
-                                    agg_names=agg_names_for_plot,
+                                    control_mean=control_mean,
+                                    control_median=control_median,
                                     marker_color=chart_color,
                                 )
                             else:
@@ -1122,6 +1149,7 @@ def main() -> None:
                                             if item.get("dash") == "dash"
                                             else "solid"
                                         )
+                                        line_color = item.get("color", "#c00")
                                         label_text = html.escape(
                                             str(item.get("label", "Agg"))
                                         )
@@ -1135,10 +1163,10 @@ def main() -> None:
                                         legend_lines.append(
                                             "<div style='display:flex;"
                                             "justify-content:center;align-items:center;"
-                                            "gap:8px;font-size:12px;color:#c00;"
+                                            f"gap:8px;font-size:12px;color:{line_color};"
                                             "line-height:1.2;margin-top:2px;'>"
                                             f"<span style='display:inline-block;"
-                                            f"width:32px;border-top:3px {dash_style} #c00;'></span>"
+                                            f"width:32px;border-top:3px {dash_style} {line_color};'></span>"
                                             f"<span>{label_text}: {value_fmt}</span>"
                                             "</div>"
                                         )

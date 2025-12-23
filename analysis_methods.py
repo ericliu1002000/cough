@@ -288,18 +288,18 @@ def calc_max(df_subset: pd.DataFrame) -> pd.Series:
 def calc_min(df_subset: pd.DataFrame) -> pd.Series:
     return df_subset.min(axis=1)
 
-@register_calc_method("Change - 较基线变化 (Col2 - Col1)")
+@register_calc_method("Change - 较基线变化 (Col1 - Col2)")
 def calc_cfb(df_subset: pd.DataFrame) -> pd.Series:
     """
     计算相对于基线的绝对变化。
-    约定：用户必须按顺序选择 [基线变量, 访视变量]
-    公式：Visit - Baseline
+    约定：用户必须按顺序选择 [Col1, Col2]
+    公式：Col1 - Col2
     """
     if df_subset.shape[1] < 2:
         return pd.Series(np.nan, index=df_subset.index)
-    return df_subset.iloc[:, 1] - df_subset.iloc[:, 0]
+    return df_subset.iloc[:, 0] - df_subset.iloc[:, 1]
 
-@register_calc_method("% Change - 较基线变化率")
+@register_calc_method("% Change/bl - 较基线变化率")
 def calc_pct_change(df_subset: pd.DataFrame) -> pd.Series:
     """
     计算相对于基线的百分比变化。
@@ -334,6 +334,24 @@ def calc_ratio(df_subset: pd.DataFrame) -> pd.Series:
         res = num / denom
     return res.replace([np.inf, -np.inf], np.nan)
 
+@register_calc_method("Log Ratio - 对数比值 (ln(Col1/Col2))")
+def calc_log_ratio(df_subset: pd.DataFrame) -> pd.Series:
+    """
+    对数比值：log(Col1 / Col2) = log(Col1) - log(Col2)
+    仅对正值有效，非正值返回 NaN。
+    """
+    if df_subset.shape[1] < 2:
+        return pd.Series(np.nan, index=df_subset.index)
+
+    num = pd.to_numeric(df_subset.iloc[:, 0], errors='coerce')
+    denom = pd.to_numeric(df_subset.iloc[:, 1], errors='coerce')
+    valid = (num > 0) & (denom > 0)
+    res = pd.Series(np.nan, index=df_subset.index, dtype="float64")
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        res[valid] = np.log(num[valid]) - np.log(denom[valid])
+
+    return res
 
 from scipy import stats
 

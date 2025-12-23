@@ -1,7 +1,7 @@
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 
 
@@ -59,8 +59,8 @@ def build_uniform_spaghetti_fig(
     title: str,
     x_range: Optional[tuple[float, float]] = None,
     y_max_count: Optional[int] = None,
-    agg_funcs: Optional[List[Any]] = None,
-    agg_names: Optional[List[str]] = None,
+    control_mean: Optional[float] = None,
+    control_median: Optional[float] = None,
     marker_color: Optional[str] = None,
 ) -> Optional["go.Figure"]:
     """
@@ -92,8 +92,11 @@ def build_uniform_spaghetti_fig(
     if y_max_count <= 0:
         return None
 
+    # 预留最下方一行放总体箱线图
+    y_total_count = y_max_count + 1
+
     # 使用数值轴模拟“类别轴”，便于固定范围并留白
-    start_pos = y_max_count - 1
+    start_pos = y_total_count - 1
     y_positions = list(range(start_pos, start_pos - len(x_vals), -1))
 
     # 绘图区由容器宽度决定（在渲染阶段用 CSS 固定为正方形）
@@ -122,36 +125,84 @@ def build_uniform_spaghetti_fig(
         )
     )
 
-    # 画两条参考线：第 1 条虚线，第 2 条实线（数值标注放在图表下方）
-    legend_items = []
-    if agg_funcs:
-        for idx, func in enumerate(agg_funcs[:2]):
-            if not callable(func):
-                continue
-            try:
-                agg_value = func(pd.Series(x_vals))
-                agg_x = float(agg_value)
-            except Exception:
-                continue
+    box_trace_index = len(fig.data)
+    fig.add_trace(
+        go.Box(
+            x=x_vals,
+            y=[0] * len(x_vals),
+            orientation="h",
+            boxpoints=False,
+            width=0.8,
+            line=dict(color="#111111", width=2),
+            fillcolor="rgba(0,0,0,0.08)",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
 
-            agg_label = (
-                agg_names[idx]
-                if agg_names and idx < len(agg_names)
-                else f"Agg {idx + 1}"
+    mean_marker_index = None
+    if x_vals:
+        current_mean = float(pd.Series(x_vals).mean())
+        mean_marker_index = len(fig.data)
+        fig.add_trace(
+            go.Scatter(
+                x=[current_mean],
+                y=[0],
+                mode="markers",
+                marker=dict(
+                    symbol="asterisk-open",
+                    size=18,
+                    color="#111111",
+                    line=dict(color="#111111", width=1),
+                ),
+                hovertemplate=f"当前组均值: {current_mean:.2f}<extra></extra>",
+                showlegend=False,
             )
-            fig.add_vline(
-                x=agg_x,
-                line_width=3,
-                line_dash="dash" if idx == 0 else "solid",
-                line_color="red",
-            )
-            legend_items.append(
-                {
-                    "label": agg_label,
-                    "value": agg_x,
-                    "dash": "dash" if idx == 0 else "solid",
-                }
-            )
+        )
+
+    line_y_min = 0.5
+    line_y_max = y_total_count - 0.5
+
+    # 对照组参考线：红色为均值，绿色为中位数
+    legend_items = []
+    if control_mean is not None:
+        fig.add_shape(
+            type="line",
+            x0=control_mean,
+            x1=control_mean,
+            y0=line_y_min,
+            y1=line_y_max,
+            xref="x",
+            yref="y",
+            line=dict(color="#c00", width=3, dash="solid"),
+        )
+        legend_items.append(
+            {
+                "label": "对照组均值",
+                "value": control_mean,
+                "dash": "solid",
+                "color": "#c00",
+            }
+        )
+    if control_median is not None:
+        fig.add_shape(
+            type="line",
+            x0=control_median,
+            x1=control_median,
+            y0=line_y_min,
+            y1=line_y_max,
+            xref="x",
+            yref="y",
+            line=dict(color="#2ca02c", width=3, dash="solid"),
+        )
+        legend_items.append(
+            {
+                "label": "对照组中位数",
+                "value": control_median,
+                "dash": "solid",
+                "color": "#2ca02c",
+            }
+        )
 
     margin_pad = 32
     fig.update_layout(
@@ -162,12 +213,17 @@ def build_uniform_spaghetti_fig(
         showlegend=False,
         # 悬浮提示字号加大，缩小图表后更易读
         hoverlabel=dict(font=dict(size=16)),
-        meta={"legend_items": legend_items},
+        hovermode="x",
+        meta={
+            "legend_items": legend_items,
+            "boxplot_trace_index": box_trace_index,
+            "mean_marker_trace_index": mean_marker_index,
+        },
     )
 
     yaxis_cfg = dict(
         # 固定 Y 轴范围，确保所有图留白一致
-        range=[-0.5, y_max_count - 0.5],
+        range=[-0.5, y_total_count - 0.5],
         # 将数值轴映射为类别文本
         tickmode="array",
         tickvals=y_positions,
@@ -181,53 +237,69 @@ def build_uniform_spaghetti_fig(
     # 统一 X 轴范围（全局最大值）
     if x_range:
         fig.update_xaxes(range=list(x_range))
-    fig.update_xaxes(automargin=True, title_standoff=12)
+    fig.update_xaxes(
+        automargin=True,
+        title_standoff=12,
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor="#999999",
+        spikesnap="cursor",
+    )
 
     return fig
 
 
-def resolve_uniform_line_aggs(
-    available_agg_names: List[str],
-    default_names: List[str],
-    agg_methods: Dict[str, Any],
-    key: str = "uniform_line_aggs",
-) -> tuple[List[str], List[Any]]:
-    if not available_agg_names:
-        return [], []
+def resolve_uniform_control_group(
+    col_key_cols: List[str],
+    col_keys: List[Dict[str, str]],
+    default_group: Optional[Dict[str, str]] = None,
+    key: str = "uniform_control_group",
+) -> Optional[Dict[str, str]]:
+    if not col_key_cols or not col_keys:
+        st.session_state.pop(key, None)
+        return None
 
-    default_filtered = [
-        name for name in default_names if name in available_agg_names
-    ][:2]
-    if not default_filtered:
-        default_filtered = available_agg_names[:2]
+    def build_key(record: Dict[str, str]) -> str:
+        return "\x1f".join([str(record.get(col, "")) for col in col_key_cols])
 
-    existing = st.session_state.get(key)
-    if isinstance(existing, list):
-        filtered = [
-            name for name in existing if name in available_agg_names
-        ][:2]
-        if filtered:
-            st.session_state[key] = filtered
-        else:
-            st.session_state.pop(key, None)
+    def build_label(record: Dict[str, str]) -> str:
+        return " / ".join([str(record.get(col, "")) for col in col_key_cols])
 
-    selected = st.multiselect(
-        "中垂线统计量（最多两条）",
-        options=available_agg_names,
-        default=default_filtered,
-        max_selections=2,
-        key=key,
-        help="默认取当前视图的前两个聚合函数，可自选 1-2 个。",
+    option_map: Dict[str, Dict[str, str]] = {}
+    label_map: Dict[str, str] = {}
+    for option in col_keys:
+        combo_key = build_key(option)
+        if combo_key in option_map:
+            continue
+        option_map[combo_key] = option
+        label_map[combo_key] = build_label(option)
+
+    options = list(option_map.keys())
+    if not options:
+        st.session_state.pop(key, None)
+        return None
+
+    default_key = None
+    if isinstance(default_group, dict):
+        default_key = build_key(default_group)
+        if default_key not in option_map:
+            default_key = None
+    if default_key is None:
+        default_key = options[0]
+
+    selected_key = st.selectbox(
+        "对照组（列维度）",
+        options=options,
+        index=options.index(default_key),
+        key=f"{key}_ui",
+        format_func=lambda k: label_map.get(k, k),
+        help="选择列维度中的对照组，用于绘制均值/中位数参考线。",
     )
-    if not selected:
-        selected = default_filtered
-        st.session_state[key] = selected
-    elif len(selected) > 2:
-        selected = selected[:2]
-        st.session_state[key] = selected
 
-    funcs = [agg_methods.get(name) for name in selected]
-    return selected, funcs
+    selected_group = option_map[selected_key]
+    st.session_state[key] = selected_group
+    return selected_group
 
 
 def render_uniform_spaghetti_fig(fig: "go.Figure", key: str) -> None:
@@ -254,6 +326,19 @@ def render_uniform_spaghetti_fig(fig: "go.Figure", key: str) -> None:
 
         if selection and selection.get("points"):
             pt = selection["points"][0]
+            meta = getattr(fig.layout, "meta", None)
+            box_trace_index = None
+            mean_marker_trace_index = None
+            if isinstance(meta, dict):
+                box_trace_index = meta.get("boxplot_trace_index")
+                mean_marker_trace_index = meta.get("mean_marker_trace_index")
+            if box_trace_index is not None and pt.get("curveNumber") == box_trace_index:
+                return
+            if (
+                mean_marker_trace_index is not None
+                and pt.get("curveNumber") == mean_marker_trace_index
+            ):
+                return
             custom_data = pt.get("customdata")
             if isinstance(custom_data, list):
                 selected_id = custom_data[0]
@@ -275,8 +360,8 @@ def draw_uniform_spaghetti_chart(
     key: str,
     x_range: Optional[tuple[float, float]] = None,
     y_max_count: Optional[int] = None,
-    agg_funcs: Optional[List[Any]] = None,
-    agg_names: Optional[List[str]] = None,
+    control_mean: Optional[float] = None,
+    control_median: Optional[float] = None,
     marker_color: Optional[str] = None,
 ) -> None:
     fig = build_uniform_spaghetti_fig(
@@ -286,8 +371,8 @@ def draw_uniform_spaghetti_chart(
         title=title,
         x_range=x_range,
         y_max_count=y_max_count,
-        agg_funcs=agg_funcs,
-        agg_names=agg_names,
+        control_mean=control_mean,
+        control_median=control_median,
         marker_color=marker_color,
     )
 
