@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
@@ -9,22 +9,72 @@ from analysis_methods import AGG_METHODS
 
 
 def _apply_row_order(
-    pivot: pd.DataFrame, row_order: List[str] | None
+    pivot: pd.DataFrame,
+    index_cols: List[str],
+    row_orders: Dict[str, List[str]] | None,
 ) -> pd.DataFrame:
-    if not row_order or pivot.empty:
+    if not row_orders or pivot.empty or not index_cols:
         return pivot
 
-    order_map = {str(val): idx for idx, val in enumerate(row_order)}
     if isinstance(pivot.index, pd.MultiIndex):
-        level0 = pivot.index.get_level_values(0)
-    else:
-        level0 = pivot.index
+        level_name_to_idx = {
+            name: idx for idx, name in enumerate(pivot.index.names)
+        }
+        row_level_indices = [
+            level_name_to_idx[name]
+            for name in index_cols
+            if name in level_name_to_idx
+        ]
+        if not row_level_indices:
+            return pivot
 
-    order_key = [order_map.get(str(v), len(order_map)) for v in level0]
-    pos_key = list(range(len(pivot.index)))
-    sort_df = pd.DataFrame({"order": order_key, "pos": pos_key}, index=pivot.index)
-    new_index = sort_df.sort_values(["order", "pos"]).index
-    return pivot.loc[new_index]
+        idx_frame = pivot.index.to_frame(index=False)
+        idx_frame.columns = [
+            f"level_{i}" for i in range(idx_frame.shape[1])
+        ]
+
+        order_cols_for = {}
+        for field in index_cols:
+            order_list = row_orders.get(field)
+            if not order_list:
+                continue
+            level_idx = level_name_to_idx.get(field)
+            if level_idx is None:
+                continue
+            order_map = {str(val): idx for idx, val in enumerate(order_list)}
+            order_cols_for[f"level_{level_idx}"] = order_map
+
+        if not order_cols_for:
+            return pivot
+
+        order_cols = []
+        for level_col, order_map in order_cols_for.items():
+            idx_frame[level_col] = idx_frame[level_col].astype(str)
+            order_name = f"_order_{level_col}"
+            idx_frame[order_name] = idx_frame[level_col].map(
+                lambda v: order_map.get(str(v), len(order_map))
+            )
+            order_cols.append(order_name)
+
+        new_order = idx_frame.sort_values(order_cols, kind="stable").index
+        return pivot.iloc[new_order]
+
+    if len(index_cols) == 1 and pivot.index.name in row_orders:
+        order_map = {
+            str(val): idx
+            for idx, val in enumerate(row_orders[pivot.index.name])
+        }
+        order_key = [
+            order_map.get(str(v), len(order_map)) for v in pivot.index
+        ]
+        pos_key = list(range(len(pivot.index)))
+        sort_df = pd.DataFrame(
+            {"order": order_key, "pos": pos_key}, index=pivot.index
+        )
+        new_index = sort_df.sort_values(["order", "pos"]).index
+        return pivot.loc[new_index]
+
+    return pivot
 
 
 def _apply_col_order(
@@ -124,7 +174,7 @@ def build_pivot_table(
     column_cols: List[str],
     value_cols: List[str],
     agg_names: List[str],
-    row_order: List[str] | None = None,
+    row_orders: Dict[str, List[str]] | None = None,
     col_orders: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
     p_src = df.copy()
@@ -145,7 +195,7 @@ def build_pivot_table(
         sort=False,
     )
 
-    pivot = _apply_row_order(pivot, row_order)
+    pivot = _apply_row_order(pivot, index_cols, row_orders)
     pivot = _apply_col_order(pivot, column_cols, col_orders)
     return pivot
 
@@ -156,7 +206,7 @@ def render_pivot_classic(
     column_cols: List[str],
     value_cols: List[str],
     agg_names: List[str],
-    row_order: List[str] | None = None,
+    row_orders: Dict[str, List[str]] | None = None,
     col_orders: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
     pivot = build_pivot_table(
@@ -165,7 +215,7 @@ def render_pivot_classic(
         column_cols=column_cols,
         value_cols=value_cols,
         agg_names=agg_names,
-        row_order=row_order,
+        row_orders=row_orders,
         col_orders=col_orders,
     )
     st.dataframe(pivot, width="stretch")

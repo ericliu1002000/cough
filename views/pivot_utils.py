@@ -30,19 +30,30 @@ def format_key_label(key: Dict[str, str], sep: str = ", ") -> str:
 def _order_row_keys(
     row_keys_df: pd.DataFrame,
     row_key_cols: List[str],
-    row_order: List[str] | None,
+    row_orders: Dict[str, List[str]] | None,
 ) -> pd.DataFrame:
-    if not row_key_cols or not row_order or row_keys_df.empty:
+    if not row_key_cols or not row_orders or row_keys_df.empty:
         return row_keys_df
 
-    first_col = row_key_cols[0]
-    order_map = {val: idx for idx, val in enumerate(row_order)}
-    order_vals = row_keys_df[first_col].map(
-        lambda v: order_map.get(v, len(order_map))
-    )
-    ordered = row_keys_df.assign(_order=order_vals)
-    ordered = ordered.sort_values("_order", kind="stable")
-    return ordered.drop(columns="_order")
+    ordered = row_keys_df.copy()
+    order_cols = []
+    for col in row_key_cols:
+        order_list = row_orders.get(col)
+        if not order_list:
+            continue
+        order_map = {val: idx for idx, val in enumerate(order_list)}
+        ordered_col = ordered[col].map(
+            lambda v: order_map.get(v, len(order_map))
+        )
+        order_col = f"_order_{col}"
+        ordered[order_col] = ordered_col
+        order_cols.append(order_col)
+
+    if not order_cols:
+        return row_keys_df
+
+    ordered = ordered.sort_values(order_cols, kind="stable")
+    return ordered.drop(columns=order_cols)
 
 
 def _order_col_keys(
@@ -80,14 +91,19 @@ def build_nested_pivot_data(
     col_key_cols: List[str],
     value_cols: List[str],
     agg_names: List[str],
-    row_order: List[str] | None = None,
+    row_orders: Dict[str, List[str]] | None = None,
     col_orders: Dict[str, List[str]] | None = None,
 ) -> NestedPivotData:
     row_key_cols = list(row_key_cols or [])
     col_key_cols = list(col_key_cols or [])
     value_cols = list(value_cols or [])
     agg_names = list(agg_names or [])
-    row_order = [str(v) for v in row_order] if row_order else None
+    if row_orders:
+        row_orders = {
+            key: [str(v) for v in vals]
+            for key, vals in row_orders.items()
+            if isinstance(vals, (list, tuple, set))
+        }
     if col_orders:
         col_orders = {
             key: [str(v) for v in vals]
@@ -104,7 +120,7 @@ def build_nested_pivot_data(
 
     if row_key_cols:
         row_keys_df = work_df[row_key_cols].drop_duplicates()
-        row_keys_df = _order_row_keys(row_keys_df, row_key_cols, row_order)
+        row_keys_df = _order_row_keys(row_keys_df, row_key_cols, row_orders)
         row_keys = row_keys_df.to_dict(orient="records")
         row_key_tuples = [
             tuple(rec.get(col, "") for col in row_key_cols) for rec in row_keys

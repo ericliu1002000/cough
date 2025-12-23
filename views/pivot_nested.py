@@ -102,7 +102,7 @@ def render_pivot_nested(
     column_cols: List[str],
     value_cols: List[str],
     agg_names: List[str],
-    row_order: List[str] | None = None,
+    row_orders: dict[str, list[str]] | None = None,
     col_orders: dict[str, list[str]] | None = None,
 ) -> NestedPivotData:
     data = build_nested_pivot_data(
@@ -111,7 +111,7 @@ def render_pivot_nested(
         col_key_cols=column_cols,
         value_cols=value_cols,
         agg_names=agg_names,
-        row_order=row_order,
+        row_orders=row_orders,
         col_orders=col_orders,
     )
 

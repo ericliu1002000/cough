@@ -255,7 +255,17 @@ def main() -> None:
             return
 
         option_labels = [f"{row['setup_name']}" for row in setups]
-        selected_label = st.selectbox("选择配置", options=option_labels)
+        query_setup = st.query_params.get("setup_name")
+        if isinstance(query_setup, list):
+            query_setup = query_setup[0] if query_setup else None
+        default_index = 0
+        if query_setup in option_labels:
+            default_index = option_labels.index(query_setup)
+        selected_label = st.selectbox(
+            "选择配置",
+            options=option_labels,
+            index=default_index,
+        )
         selected_row = next(r for r in setups if f"{r['setup_name']}" == selected_label)
         
         if selected_row.get("description"):
@@ -281,9 +291,14 @@ def main() -> None:
             "ex_f",
             "ex_v",
             "pivot_row_order_selected",
+            "pivot_row_order_up",
+            "pivot_row_order_down",
             "boxplot_visible_cols",
         ]
         reset_prefixes = [
+            "pivot_row_order_selected_",
+            "pivot_row_order_up_",
+            "pivot_row_order_down_",
             "pivot_col_order_selected_",
             "pivot_col_order_up_",
             "pivot_col_order_down_",
@@ -313,12 +328,24 @@ def main() -> None:
         st.session_state["pivot_aggs"] = raw_aggs
         st.session_state["pivot_view_mode"] = p_cfg.get("view", "classic")
         row_order_cfg = p_cfg.get("row_order", {})
-        if not isinstance(row_order_cfg, dict):
-            row_order_cfg = {}
-        st.session_state["pivot_row_order_field"] = row_order_cfg.get("field")
-        st.session_state["pivot_row_order_values"] = list(
-            row_order_cfg.get("values", [])
-        )
+        row_orders: dict[str, list[str]] = {}
+        if isinstance(row_order_cfg, dict):
+            if "field" in row_order_cfg and "values" in row_order_cfg:
+                field = row_order_cfg.get("field")
+                values = row_order_cfg.get("values", [])
+                if field:
+                    row_orders[str(field)] = (
+                        list(values)
+                        if isinstance(values, (list, tuple, set))
+                        else []
+                    )
+            else:
+                for field, values in row_order_cfg.items():
+                    if isinstance(values, (list, tuple, set)):
+                        row_orders[str(field)] = list(values)
+        st.session_state["pivot_row_orders"] = row_orders
+        st.session_state.pop("pivot_row_order_field", None)
+        st.session_state.pop("pivot_row_order_values", None)
         col_order_cfg = p_cfg.get("col_order", {})
         if not isinstance(col_order_cfg, dict):
             col_order_cfg = {}
@@ -508,6 +535,18 @@ def main() -> None:
 
         st.divider()
         if st.button("💾 保存所有配置"):
+            row_orders_map = st.session_state.get("pivot_row_orders", {})
+            if not isinstance(row_orders_map, dict):
+                row_orders_map = {}
+            row_fields = st.session_state.get("pivot_index", [])
+            if row_fields:
+                row_orders_map = {
+                    k: list(v) if isinstance(v, (list, tuple, set)) else []
+                    for k, v in row_orders_map.items()
+                    if k in row_fields
+                }
+            else:
+                row_orders_map = {}
             payload = {
                 "baseline": st.session_state.get("baseline_config", {}),
                 "calc_rules": st.session_state.get("calc_rules", []),
@@ -519,12 +558,7 @@ def main() -> None:
                     "values": st.session_state.get("pivot_values", []),
                     "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
                     "view": st.session_state.get("pivot_view_mode", "classic"),
-                    "row_order": {
-                        "field": st.session_state.get("pivot_row_order_field"),
-                        "values": st.session_state.get(
-                            "pivot_row_order_values", []
-                        ),
-                    },
+                    "row_order": row_orders_map,
                     "col_order": st.session_state.get("pivot_col_order", {}),
                     "uniform_control_group": st.session_state.get(
                         "uniform_control_group"
@@ -591,13 +625,15 @@ def main() -> None:
             if not available_values:
                 return []
 
-            stored_field = st.session_state.get("pivot_row_order_field")
-            stored_values = st.session_state.get("pivot_row_order_values")
+            row_orders = st.session_state.get("pivot_row_orders", {})
+            if not isinstance(row_orders, dict):
+                row_orders = {}
 
-            if stored_field != field or not stored_values:
-                st.session_state["pivot_row_order_field"] = field
-                st.session_state["pivot_row_order_values"] = list(available_values)
-                return st.session_state["pivot_row_order_values"]
+            stored_values = row_orders.get(field)
+            if not stored_values:
+                row_orders[field] = list(available_values)
+                st.session_state["pivot_row_orders"] = row_orders
+                return row_orders[field]
 
             if not isinstance(stored_values, list):
                 stored_values = list(stored_values)
@@ -606,7 +642,8 @@ def main() -> None:
             missing = [v for v in available_values if v not in cleaned]
             if missing or len(cleaned) != len(stored_values):
                 cleaned.extend(missing)
-                st.session_state["pivot_row_order_values"] = cleaned
+                row_orders[field] = cleaned
+                st.session_state["pivot_row_orders"] = row_orders
             return cleaned
 
         def sync_pivot_col_order(
@@ -681,24 +718,34 @@ def main() -> None:
         )
         st.session_state["pivot_view_mode"] = selected_view
 
-        row_order_values = None
-        row_order_field = None
+        row_orders_map = st.session_state.get("pivot_row_orders", {})
+        if not isinstance(row_orders_map, dict):
+            row_orders_map = {}
         if idx:
-            first_field = idx[0]
-            row_order_field = first_field
-            if first_field in final_df.columns:
-                available_values = (
-                    final_df[first_field]
-                    .dropna()
-                    .astype(str)
-                    .drop_duplicates()
-                    .tolist()
+            row_orders_map = {
+                k: v for k, v in row_orders_map.items() if k in idx
+            }
+            st.session_state["pivot_row_orders"] = row_orders_map
+        else:
+            row_orders_map = {}
+            st.session_state["pivot_row_orders"] = row_orders_map
+
+        row_order_values_map: dict[str, list[str]] = {}
+        if idx:
+            for field in idx:
+                if field in final_df.columns:
+                    available_values = (
+                        final_df[field]
+                        .dropna()
+                        .astype(str)
+                        .drop_duplicates()
+                        .tolist()
+                    )
+                else:
+                    available_values = []
+                row_order_values_map[field] = sync_pivot_row_order(
+                    field, available_values
                 )
-            else:
-                available_values = []
-            row_order_values = sync_pivot_row_order(
-                first_field, available_values
-            )
 
         col_order_map = st.session_state.get("pivot_col_order", {})
         if not isinstance(col_order_map, dict):
@@ -711,54 +758,62 @@ def main() -> None:
 
         order_left, order_right = st.columns(2)
         with order_left:
-            if row_order_field is None:
+            if not idx:
                 st.caption("请选择行维度以排序。")
             else:
-                with st.expander(
-                    f"行维度顺序（{row_order_field}）", expanded=False
-                ):
-                    if not row_order_values:
-                        st.caption("暂无可排序的值。")
-                    else:
+                for field in idx:
+                    with st.expander(
+                        f"行维度顺序（{field}）", expanded=False
+                    ):
+                        values = row_order_values_map.get(field, [])
+                        if not values:
+                            st.caption("暂无可排序的值。")
+                            continue
                         selected_value = st.selectbox(
                             "选择要移动的值",
-                            row_order_values,
-                            key="pivot_row_order_selected",
+                            values,
+                            key=f"pivot_row_order_selected_{field}",
                         )
                         move_up, move_down = st.columns(2)
                         if move_up.button(
-                            "上移", key="pivot_row_order_up"
+                            "上移", key=f"pivot_row_order_up_{field}"
                         ):
-                            new_order = list(row_order_values)
+                            new_order = list(values)
                             idx_pos = new_order.index(selected_value)
                             if idx_pos > 0:
                                 new_order[idx_pos - 1], new_order[idx_pos] = (
                                     new_order[idx_pos],
                                     new_order[idx_pos - 1],
                                 )
-                                st.session_state[
-                                    "pivot_row_order_values"
-                                ] = new_order
-                                row_order_values = new_order
+                                row_orders = st.session_state.get(
+                                    "pivot_row_orders", {}
+                                )
+                                if not isinstance(row_orders, dict):
+                                    row_orders = {}
+                                row_orders[field] = new_order
+                                st.session_state["pivot_row_orders"] = row_orders
+                                row_order_values_map[field] = new_order
                                 st.rerun()
                         if move_down.button(
-                            "下移", key="pivot_row_order_down"
+                            "下移", key=f"pivot_row_order_down_{field}"
                         ):
-                            new_order = list(row_order_values)
+                            new_order = list(values)
                             idx_pos = new_order.index(selected_value)
                             if idx_pos < len(new_order) - 1:
                                 new_order[idx_pos + 1], new_order[idx_pos] = (
                                     new_order[idx_pos],
                                     new_order[idx_pos + 1],
                                 )
-                                st.session_state[
-                                    "pivot_row_order_values"
-                                ] = new_order
-                                row_order_values = new_order
+                                row_orders = st.session_state.get(
+                                    "pivot_row_orders", {}
+                                )
+                                if not isinstance(row_orders, dict):
+                                    row_orders = {}
+                                row_orders[field] = new_order
+                                st.session_state["pivot_row_orders"] = row_orders
+                                row_order_values_map[field] = new_order
                                 st.rerun()
-                        st.caption(
-                            "当前顺序：" + " → ".join(row_order_values)
-                        )
+                        st.caption("当前顺序：" + " → ".join(values))
 
         with order_right:
             if not col:
@@ -847,7 +902,7 @@ def main() -> None:
                         column_cols=col,
                         value_cols=val,
                         agg_names=aggs,
-                        row_order=row_order_values,
+                        row_orders=row_orders_map,
                         col_orders=st.session_state.get("pivot_col_order", {}),
                     )
                     st.download_button(
@@ -868,7 +923,7 @@ def main() -> None:
                         col_orders = st.session_state.get(
                             "pivot_col_order", {}
                         )
-                        row_order = row_order_values
+                        row_orders = row_orders_map
                         for agg_name in aggs:
                             for col_field in col:
                                 fig = build_pivot_line_fig(
@@ -877,7 +932,7 @@ def main() -> None:
                                     row_key_cols=row_cols,
                                     col_field=col_field,
                                     agg_name=agg_name,
-                                    row_order=row_order,
+                                    row_orders=row_orders,
                                     col_orders=col_orders,
                                 )
                                 if fig is None:
@@ -935,7 +990,7 @@ def main() -> None:
                         column_cols=col,
                         value_cols=val,
                         agg_names=aggs,
-                        row_order=row_order_values,
+                        row_orders=row_orders_map,
                         col_orders=st.session_state.get("pivot_col_order", {}),
                     )
                     st.download_button(

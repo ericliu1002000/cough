@@ -26,23 +26,30 @@ def _coerce_number(val: Any) -> Optional[float]:
 def _build_row_keys(
     df: pd.DataFrame,
     row_key_cols: List[str],
-    row_order: Optional[List[str]],
+    row_orders: Optional[Dict[str, List[str]]],
 ) -> Tuple[List[Dict[str, str]], List[Tuple[str, ...]]]:
     if not row_key_cols:
         return [{}], [()]
 
     row_keys_df = df[row_key_cols].drop_duplicates()
-    if row_order:
-        order_map = {str(val): idx for idx, val in enumerate(row_order)}
-        first_col = row_key_cols[0]
-        order_vals = row_keys_df[first_col].map(
-            lambda v: order_map.get(v, len(order_map))
-        )
-        row_keys_df = (
-            row_keys_df.assign(_order=order_vals)
-            .sort_values("_order", kind="stable")
-            .drop(columns="_order")
-        )
+    if row_orders:
+        ordered = row_keys_df.copy()
+        order_cols = []
+        for col in row_key_cols:
+            order_list = row_orders.get(col)
+            if not order_list:
+                continue
+            order_map = {str(val): idx for idx, val in enumerate(order_list)}
+            ordered_col = ordered[col].map(
+                lambda v: order_map.get(str(v), len(order_map))
+            )
+            order_name = f"_order_{col}"
+            ordered[order_name] = ordered_col
+            order_cols.append(order_name)
+        if order_cols:
+            row_keys_df = ordered.sort_values(
+                order_cols, kind="stable"
+            ).drop(columns=order_cols)
 
     row_keys = row_keys_df.to_dict(orient="records")
     row_key_tuples = [
@@ -97,7 +104,7 @@ def build_pivot_line_fig(
     row_key_cols: List[str],
     col_field: str,
     agg_name: str,
-    row_order: Optional[List[str]] = None,
+    row_orders: Optional[Dict[str, List[str]]] = None,
     col_orders: Optional[Dict[str, List[str]]] = None,
 ) -> Optional["go.Figure"]:
     if df.empty or value_col not in df.columns or col_field not in df.columns:
@@ -115,8 +122,14 @@ def build_pivot_line_fig(
     if work_df.empty:
         return None
 
+    if row_orders:
+        row_orders = {
+            key: [str(v) for v in vals]
+            for key, vals in row_orders.items()
+            if isinstance(vals, (list, tuple, set))
+        }
     row_keys, row_key_tuples = _build_row_keys(
-        work_df, row_key_cols, row_order
+        work_df, row_key_cols, row_orders
     )
     x_values = _build_col_values(work_df, col_field, col_orders)
     if not x_values:

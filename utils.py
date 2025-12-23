@@ -98,6 +98,58 @@ def fetch_all_setups() -> List[Dict[str, Any]]:
         return []
 
 
+def fetch_all_setups_detail() -> List[Dict[str, Any]]:
+    """
+    读取 setup 列表并解析 note 字段（来自 config_calculation）。
+
+    返回:
+        [{'id': ..., 'setup_name': ..., 'description': ..., 'note': ...}, ...]
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    "SELECT id, setup_name, description, config_calculation "
+                    "FROM analysis_list_setups "
+                    "ORDER BY setup_name"
+                )
+            )
+            rows = [dict(row) for row in result.mappings()]
+
+        def _normalize_json(value: Any) -> Any:
+            if value is None:
+                return None
+            if isinstance(value, (bytes, bytearray)):
+                try:
+                    value = value.decode("utf-8")
+                except Exception:
+                    return None
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, str):
+                        trimmed = parsed.strip()
+                        if trimmed.startswith("{") or trimmed.startswith("["):
+                            return json.loads(trimmed)
+                    return parsed
+                except json.JSONDecodeError:
+                    return value
+            return value
+
+        for row in rows:
+            calc_raw = _normalize_json(row.get("config_calculation"))
+            note = ""
+            if isinstance(calc_raw, dict):
+                note = calc_raw.get("note", "") or ""
+            row["note"] = note
+            row.pop("config_calculation", None)
+
+        return rows
+    except Exception:
+        return []
+
+
 def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
     """
     根据 setup_name 读取单个配置的一段/二段配置。
