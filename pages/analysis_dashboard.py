@@ -250,28 +250,44 @@ def main() -> None:
             st.info(f"📝 **备注**: {selected_row['description']}")
 
     # --- 1.1 状态管理与初始化 ---
-    if "current_setup_name" not in st.session_state:
-        st.session_state["current_setup_name"] = selected_row["setup_name"]
-        need_reload = True
-    else:
-        need_reload = (
-            st.session_state["current_setup_name"] != selected_row["setup_name"]
-        )
+    st.session_state["current_setup_name"] = selected_row["setup_name"]
 
-    if need_reload:
-        st.session_state["current_setup_name"] = selected_row["setup_name"]
-
-        cfg_pack = fetch_setup_config(selected_row["setup_name"]) or {}
-        calc_cfg = cfg_pack.get("calculation") or {}
+    # --- 2. 加载源数据 ---
+    if st.button("🚀 加载源数据", type="primary"):
+        full_cfg = fetch_setup_config(selected_row["setup_name"]) or {}
+        calc_cfg = full_cfg.get("calculation") or {}
         if isinstance(calc_cfg, list):
             calc_cfg = {"calc_rules": calc_cfg}
 
+        # 重置 UI 缓存，确保完全使用数据库配置
+        reset_keys = [
+            "calc_note_input",
+            "bl_subj_ui",
+            "bl_visit_ui",
+            "bl_val_ui",
+            "bl_targets_ui",
+            "ex_f",
+            "ex_v",
+            "pivot_row_order_selected",
+            "boxplot_visible_cols",
+        ]
+        reset_prefixes = [
+            "pivot_col_order_selected_",
+            "pivot_col_order_up_",
+            "pivot_col_order_down_",
+        ]
+        for key in reset_keys:
+            st.session_state.pop(key, None)
+        for key in list(st.session_state.keys()):
+            if any(key.startswith(prefix) for prefix in reset_prefixes):
+                st.session_state.pop(key, None)
+
+        # 覆盖缓存为数据库配置
         st.session_state["calc_rules"] = calc_cfg.get("calc_rules", [])
         st.session_state["calc_note"] = calc_cfg.get("note", "")
-        st.session_state.pop("calc_note_input", None)
         st.session_state["exclusions"] = calc_cfg.get("exclusions", [])
         st.session_state["pivot_config"] = calc_cfg.get("pivot", {})
-        st.session_state["baseline_config"] = calc_cfg.get("baseline", {}) 
+        st.session_state["baseline_config"] = calc_cfg.get("baseline", {})
 
         p_cfg = st.session_state["pivot_config"]
         raw_agg = p_cfg.get("agg", ["Mean - 平均值"])
@@ -304,15 +320,11 @@ def main() -> None:
         else:
             st.session_state.pop("uniform_control_group", None)
 
-
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
         st.session_state.pop("selected_subject_id", None)
 
-    # --- 2. 加载源数据 ---
-    if st.button("🚀 加载源数据", type="primary"):
-        full_cfg = fetch_setup_config(selected_row["setup_name"])
-        if full_cfg and full_cfg.get("extraction"):
+        if full_cfg.get("extraction"):
             sql, df_res = run_analysis(full_cfg["extraction"])
             if not df_res.empty:
                 st.session_state["raw_df"] = df_res
