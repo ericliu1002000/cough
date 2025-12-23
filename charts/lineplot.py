@@ -8,6 +8,8 @@ import streamlit as st
 
 from analysis_methods import AGG_METHODS
 
+# 使用场景：嵌套透视表中的折线分面图（列维度字段 × 聚合函数），行维度组合为多条线。
+
 
 def _coerce_number(val: Any) -> Optional[float]:
     if val is None:

@@ -100,6 +100,41 @@ st.markdown(
         display: flex;
         justify-content: flex-end;
     }
+    .search-panel {
+        max-width: 520px;
+    }
+    .suggestions {
+        margin-top: 8px;
+        border: 1px solid #d6ead7;
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 8px 18px rgba(46, 88, 64, 0.08);
+        padding: 6px 0;
+    }
+    .suggest-item {
+        display: block;
+        padding: 8px 12px;
+        color: #1e3b27;
+        text-decoration: none;
+    }
+    .suggest-item:hover {
+        background: #f0f8f1;
+    }
+    .suggest-name {
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1.3;
+    }
+    .suggest-meta {
+        font-size: 12px;
+        color: #6a8372;
+        line-height: 1.3;
+    }
+    .suggest-empty {
+        padding: 10px 12px;
+        color: #7a8f7f;
+        font-size: 13px;
+    }
     @media (max-width: 1200px) {
         .setup-grid {
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -140,19 +175,53 @@ def matches_query(row: dict[str, str], query: str) -> bool:
 
 top_left, top_right = st.columns([6, 2])
 with top_left:
-    st.markdown("")
+    st.markdown("<div class='search-panel'>", unsafe_allow_html=True)
+    search_text = st.text_input(
+        "搜索",
+        placeholder="搜索",
+        label_visibility="collapsed",
+        key="setup_search",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+query = search_text.strip().lower()
+filtered_setups = [row for row in setups if matches_query(row, query)]
+
+with top_left:
+    if query:
+        suggest_rows = filtered_setups[:10]
+        if suggest_rows:
+            suggestions = ["<div class='suggestions'>"]
+            for row in suggest_rows:
+                setup_name = str(row.get("setup_name", ""))
+                description = str(row.get("description", "") or "")
+                note = str(row.get("note", "") or "")
+                desc_short = truncate_text(description, 46) or "无描述"
+                note_short = truncate_text(note, 46) or "无备注"
+                detail_url = build_page_url(
+                    "analysis_dashboard", {"setup_name": setup_name}
+                )
+                suggestions.append(
+                    "<a class='suggest-item' "
+                    f"href='{html.escape(detail_url, quote=True)}' "
+                    "target='_blank'>"
+                    f"<div class='suggest-name'>{html.escape(setup_name)}</div>"
+                    "<div class='suggest-meta'>"
+                    f"描述: {html.escape(desc_short)} | "
+                    f"备注: {html.escape(note_short)}"
+                    "</div></a>"
+                )
+            suggestions.append("</div>")
+            st.markdown("".join(suggestions), unsafe_allow_html=True)
+        else:
+            st.markdown(
+                "<div class='suggestions'><div class='suggest-empty'>"
+                "暂无匹配结果</div></div>",
+                unsafe_allow_html=True,
+            )
 with top_right:
     st.markdown("<div class='ops-panel'>", unsafe_allow_html=True)
-    with st.expander("检索与复制", expanded=False):
-        search_text = st.text_input(
-            "检索",
-            placeholder="按 setup_name / description / note 检索",
-            label_visibility="collapsed",
-        )
-        query = search_text.strip().lower()
-        filtered_setups = [row for row in setups if matches_query(row, query)]
-
-        st.caption("复制配置")
+    with st.expander("复制配置", expanded=False):
         source_options = [row["setup_name"] for row in filtered_setups]
         if source_options:
             source_name = st.selectbox("来源", source_options)
@@ -163,17 +232,13 @@ with top_right:
         new_name = st.text_input(
             "新配置名称",
             placeholder="新名称",
-            label_visibility="collapsed",
         )
         new_description = st.text_input(
             "新描述",
             placeholder="描述",
-            label_visibility="collapsed",
         )
         do_copy = st.button("复制配置", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
-filtered_setups = [row for row in setups if matches_query(row, query)]
 
 if do_copy:
     new_name = new_name.strip()

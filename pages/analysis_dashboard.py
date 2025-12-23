@@ -40,8 +40,9 @@ from exports.pivot import nested_pivot_to_excel_bytes
 from views.pivot_classic import render_pivot_classic
 from views.pivot_nested import render_pivot_nested
 
-st.set_page_config(page_title="分析仪表盘", layout="wide")
-st.title("📊 分析仪表盘")
+page_title = st.session_state.get("page_title") or "分析仪表盘"
+st.set_page_config(page_title=page_title, layout="wide")
+st.title(f"📊 {page_title}")
 st.markdown(
     """
     <style>
@@ -258,6 +259,8 @@ def main() -> None:
         query_setup = st.query_params.get("setup_name")
         if isinstance(query_setup, list):
             query_setup = query_setup[0] if query_setup else None
+        if not query_setup:
+            query_setup = st.session_state.pop("jump_setup", None)
         default_index = 0
         if query_setup in option_labels:
             default_index = option_labels.index(query_setup)
@@ -371,6 +374,11 @@ def main() -> None:
                 st.success(f"加载成功！共 {len(df_res)} 行。")
             else:
                 st.warning("查询结果为空。")
+
+        new_title = selected_row["setup_name"]
+        if st.session_state.get("page_title") != new_title:
+            st.session_state["page_title"] = new_title
+            st.rerun()
 
     # --- 3. 数据处理流水线 ---
     if "raw_df" in st.session_state:
@@ -1431,11 +1439,25 @@ def main() -> None:
                                                 rk, ck, i, j, group_color
                                             )
                             else:
-                                for j, ck in enumerate(col_keys):
-                                    if count >= limit:
-                                        stop_render = True
+                                for chunk_start in range(
+                                    0, len(col_keys), max_cols_per_row
+                                ):
+                                    if stop_render:
                                         break
-                                    render_cell_chart(rk, ck, i, j, group_color)
+                                    chunk = col_keys[
+                                        chunk_start : chunk_start
+                                        + max_cols_per_row
+                                    ]
+                                    cols = st.columns(max_cols_per_row)
+                                    for col_pos, ck in enumerate(chunk):
+                                        if count >= limit:
+                                            stop_render = True
+                                            break
+                                        j = chunk_start + col_pos
+                                        with cols[col_pos]:
+                                            render_cell_chart(
+                                                rk, ck, i, j, group_color
+                                            )
 
                     # 在图表区域顶部给出生成数量和时间提示
                     from datetime import datetime

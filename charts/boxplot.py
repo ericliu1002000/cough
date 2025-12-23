@@ -5,6 +5,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+# 使用场景：统一坐标系箱线图（行×列组合在同一坐标中），用于分布对比与异常点查看。
+
 
 def compute_boxplot_range(
     df: pd.DataFrame, value_col: str

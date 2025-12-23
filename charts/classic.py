@@ -4,6 +4,8 @@ import plotly.express as px        # 保留用于某些颜色序列，如果需�
 import streamlit as st
 from typing import Any, Dict, Optional
 
+# 使用场景：经典视图中的单元格水平柱状图（每人一条），可叠加聚合参考线。
+
 
 def build_spaghetti_fig(
     df: pd.DataFrame,
@@ -45,6 +47,7 @@ def build_spaghetti_fig(
     # tolist() 后，这就是最普通的 [1.1, 2.2, ...]，没有任何歧义。
     x_vals = tmp[value_col].values.tolist()
     y_vals = tmp[subj_col].values.tolist()
+    max_x = max(x_vals) if x_vals else None
 
     # 3. 手动构建 Figure
     fig = go.Figure()
@@ -77,14 +80,15 @@ def build_spaghetti_fig(
             agg_value = agg_func(pd.Series(x_vals))
             agg_x = float(agg_value)
             
-            fig.add_vline(
-                x=agg_x,
-                line_width=3,
-                line_dash="dash",
-                line_color="red",
-                annotation_text=f"{agg_name}: {agg_x:.2f}",
-                annotation_position="top",
-            )
+            if max_x is None or not pd.isna(agg_x) and agg_x <= max_x:
+                fig.add_vline(
+                    x=agg_x,
+                    line_width=3,
+                    line_dash="dash",
+                    line_color="red",
+                    annotation_text=f"{agg_name}: {agg_x:.2f}",
+                    annotation_position="top",
+                )
         except Exception:
             pass
 

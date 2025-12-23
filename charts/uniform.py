@@ -3,6 +3,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from typing import Dict, List, Optional
 
+# 使用场景：统一坐标系的横向柱状图，用于跨单元格横向对比。
+
 
 
 def compute_uniform_axes(
