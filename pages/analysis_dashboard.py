@@ -49,6 +49,17 @@ st.markdown(
         padding-left: 2rem;
         padding-right: 2rem;
     }
+    @media (max-width: 800px) {
+        #pivot-dim-row-marker + div[data-testid="stHorizontalBlock"],
+        #pivot-metric-row-marker + div[data-testid="stHorizontalBlock"] {
+            flex-direction: column;
+        }
+        #pivot-dim-row-marker + div[data-testid="stHorizontalBlock"] > div,
+        #pivot-metric-row-marker + div[data-testid="stHorizontalBlock"] > div {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -576,20 +587,26 @@ def main() -> None:
         def sync_pivot_row_order(
             field: str, available_values: list[str]
         ) -> list[str]:
-            stored_field = st.session_state.get("pivot_row_order_field")
-            stored_values = st.session_state.get("pivot_row_order_values", [])
-            if not isinstance(stored_values, list):
-                stored_values = list(stored_values)
+            if not available_values:
+                return []
 
-            if stored_field != field:
+            stored_field = st.session_state.get("pivot_row_order_field")
+            stored_values = st.session_state.get("pivot_row_order_values")
+
+            if stored_field != field or not stored_values:
                 st.session_state["pivot_row_order_field"] = field
                 st.session_state["pivot_row_order_values"] = list(available_values)
                 return st.session_state["pivot_row_order_values"]
 
-            new_order = [v for v in stored_values if v in available_values]
-            new_order.extend([v for v in available_values if v not in new_order])
-            st.session_state["pivot_row_order_values"] = new_order
-            return new_order
+            if not isinstance(stored_values, list):
+                stored_values = list(stored_values)
+
+            cleaned = [v for v in stored_values if v in available_values]
+            missing = [v for v in available_values if v not in cleaned]
+            if missing or len(cleaned) != len(stored_values):
+                cleaned.extend(missing)
+                st.session_state["pivot_row_order_values"] = cleaned
+            return cleaned
 
         def sync_pivot_col_order(
             field: str, available_values: list[str]
@@ -598,21 +615,35 @@ def main() -> None:
             if not isinstance(col_order_map, dict):
                 col_order_map = {}
 
-            stored_values = col_order_map.get(field, [])
+            if not available_values:
+                return []
+
+            stored_values = col_order_map.get(field)
+            if not stored_values:
+                col_order_map[field] = list(available_values)
+                st.session_state["pivot_col_order"] = col_order_map
+                return col_order_map[field]
+
             if not isinstance(stored_values, list):
                 stored_values = list(stored_values)
 
-            new_order = [v for v in stored_values if v in available_values]
-            new_order.extend([v for v in available_values if v not in new_order])
-            col_order_map[field] = new_order
-            st.session_state["pivot_col_order"] = col_order_map
-            return new_order
+            cleaned = [v for v in stored_values if v in available_values]
+            missing = [v for v in available_values if v not in cleaned]
+            if missing or len(cleaned) != len(stored_values):
+                cleaned.extend(missing)
+                col_order_map[field] = cleaned
+                st.session_state["pivot_col_order"] = col_order_map
+            return cleaned
         
-        c1, c2, c3, c4 = st.columns(4)
+        st.markdown("<div id='pivot-dim-row-marker'></div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
         with c1:
             idx = st.multiselect("行维度 (如 Visit)", all_final_cols, key="pivot_index")
         with c2:
             col = st.multiselect("列维度 (如 Group)", all_final_cols, key="pivot_columns")
+
+        st.markdown("<div id='pivot-metric-row-marker'></div>", unsafe_allow_html=True)
+        c3, c4 = st.columns(2)
         with c3:
             val = st.multiselect("值字段 (如 Score)", all_final_cols, key="pivot_values")
         with c4:
@@ -650,8 +681,10 @@ def main() -> None:
         st.session_state["pivot_view_mode"] = selected_view
 
         row_order_values = None
+        row_order_field = None
         if idx:
             first_field = idx[0]
+            row_order_field = first_field
             if first_field in final_df.columns:
                 available_values = (
                     final_df[first_field]
@@ -666,107 +699,141 @@ def main() -> None:
                 first_field, available_values
             )
 
-            with st.expander(f"行维度顺序（{first_field}）", expanded=False):
-                if not row_order_values:
-                    st.caption("暂无可排序的值。")
-                else:
-                    selected_value = st.selectbox(
-                        "选择要移动的值",
-                        row_order_values,
-                        key="pivot_row_order_selected",
-                    )
-                    move_up, move_down = st.columns(2)
-                    if move_up.button("上移", key="pivot_row_order_up"):
-                        new_order = list(row_order_values)
-                        idx_pos = new_order.index(selected_value)
-                        if idx_pos > 0:
-                            new_order[idx_pos - 1], new_order[idx_pos] = (
-                                new_order[idx_pos],
-                                new_order[idx_pos - 1],
-                            )
-                            st.session_state["pivot_row_order_values"] = new_order
-                            row_order_values = new_order
-                    if move_down.button("下移", key="pivot_row_order_down"):
-                        new_order = list(row_order_values)
-                        idx_pos = new_order.index(selected_value)
-                        if idx_pos < len(new_order) - 1:
-                            new_order[idx_pos + 1], new_order[idx_pos] = (
-                                new_order[idx_pos],
-                                new_order[idx_pos + 1],
-                            )
-                            st.session_state["pivot_row_order_values"] = new_order
-                            row_order_values = new_order
-                    st.caption("当前顺序：" + " → ".join(row_order_values))
-
         col_order_map = st.session_state.get("pivot_col_order", {})
         if not isinstance(col_order_map, dict):
             col_order_map = {}
-        col_order_map = {k: v for k, v in col_order_map.items() if k in col}
-        st.session_state["pivot_col_order"] = col_order_map
-
         if col:
-            with st.expander("列维度顺序", expanded=False):
-                for col_idx, col_field in enumerate(col):
-                    if col_field in final_df.columns:
-                        col_values = (
-                            final_df[col_field]
-                            .dropna()
-                            .astype(str)
-                            .drop_duplicates()
-                            .tolist()
-                        )
-                    else:
-                        col_values = []
-                    col_order_values = sync_pivot_col_order(
-                        col_field, col_values
-                    )
-                    st.markdown(f"**{col_field}**")
-                    if not col_order_values:
+            col_order_map = {
+                k: v for k, v in col_order_map.items() if k in col
+            }
+            st.session_state["pivot_col_order"] = col_order_map
+
+        order_left, order_right = st.columns(2)
+        with order_left:
+            if row_order_field is None:
+                st.caption("请选择行维度以排序。")
+            else:
+                with st.expander(
+                    f"行维度顺序（{row_order_field}）", expanded=False
+                ):
+                    if not row_order_values:
                         st.caption("暂无可排序的值。")
-                        continue
-                    selected_col_value = st.selectbox(
-                        "选择要移动的值",
-                        col_order_values,
-                        key=f"pivot_col_order_selected_{col_idx}",
-                    )
-                    move_up, move_down = st.columns(2)
-                    if move_up.button(
-                        "上移", key=f"pivot_col_order_up_{col_idx}"
-                    ):
-                        new_order = list(col_order_values)
-                        idx_pos = new_order.index(selected_col_value)
-                        if idx_pos > 0:
-                            new_order[idx_pos - 1], new_order[idx_pos] = (
-                                new_order[idx_pos],
-                                new_order[idx_pos - 1],
+                    else:
+                        selected_value = st.selectbox(
+                            "选择要移动的值",
+                            row_order_values,
+                            key="pivot_row_order_selected",
+                        )
+                        move_up, move_down = st.columns(2)
+                        if move_up.button(
+                            "上移", key="pivot_row_order_up"
+                        ):
+                            new_order = list(row_order_values)
+                            idx_pos = new_order.index(selected_value)
+                            if idx_pos > 0:
+                                new_order[idx_pos - 1], new_order[idx_pos] = (
+                                    new_order[idx_pos],
+                                    new_order[idx_pos - 1],
+                                )
+                                st.session_state[
+                                    "pivot_row_order_values"
+                                ] = new_order
+                                row_order_values = new_order
+                                st.rerun()
+                        if move_down.button(
+                            "下移", key="pivot_row_order_down"
+                        ):
+                            new_order = list(row_order_values)
+                            idx_pos = new_order.index(selected_value)
+                            if idx_pos < len(new_order) - 1:
+                                new_order[idx_pos + 1], new_order[idx_pos] = (
+                                    new_order[idx_pos],
+                                    new_order[idx_pos + 1],
+                                )
+                                st.session_state[
+                                    "pivot_row_order_values"
+                                ] = new_order
+                                row_order_values = new_order
+                                st.rerun()
+                        st.caption(
+                            "当前顺序：" + " → ".join(row_order_values)
+                        )
+
+        with order_right:
+            if not col:
+                st.caption("请选择列维度以排序。")
+            else:
+                with st.expander("列维度顺序", expanded=False):
+                    for col_idx, col_field in enumerate(col):
+                        if col_field in final_df.columns:
+                            col_values = (
+                                final_df[col_field]
+                                .dropna()
+                                .astype(str)
+                                .drop_duplicates()
+                                .tolist()
                             )
-                            latest_map = st.session_state.get(
-                                "pivot_col_order", {}
-                            )
-                            if not isinstance(latest_map, dict):
-                                latest_map = {}
-                            latest_map[col_field] = new_order
-                            st.session_state["pivot_col_order"] = latest_map
-                            col_order_values = new_order
-                    if move_down.button(
-                        "下移", key=f"pivot_col_order_down_{col_idx}"
-                    ):
-                        new_order = list(col_order_values)
-                        idx_pos = new_order.index(selected_col_value)
-                        if idx_pos < len(new_order) - 1:
-                            new_order[idx_pos + 1], new_order[idx_pos] = (
-                                new_order[idx_pos],
-                                new_order[idx_pos + 1],
-                            )
-                            latest_map = st.session_state.get(
-                                "pivot_col_order", {}
-                            )
-                            if not isinstance(latest_map, dict):
-                                latest_map = {}
-                            latest_map[col_field] = new_order
-                            st.session_state["pivot_col_order"] = latest_map
-                            col_order_values = new_order
-                    st.caption("当前顺序：" + " → ".join(col_order_values))
+                        else:
+                            col_values = []
+                        col_order_values = sync_pivot_col_order(
+                            col_field, col_values
+                        )
+                        st.markdown(f"**{col_field}**")
+                        if not col_order_values:
+                            st.caption("暂无可排序的值。")
+                            continue
+                        col_key = col_field
+                        selected_col_value = st.selectbox(
+                            "选择要移动的值",
+                            col_order_values,
+                            key=f"pivot_col_order_selected_{col_key}",
+                        )
+                        move_up, move_down = st.columns(2)
+                        if move_up.button(
+                            "上移", key=f"pivot_col_order_up_{col_key}"
+                        ):
+                            new_order = list(col_order_values)
+                            idx_pos = new_order.index(selected_col_value)
+                            if idx_pos > 0:
+                                new_order[idx_pos - 1], new_order[idx_pos] = (
+                                    new_order[idx_pos],
+                                    new_order[idx_pos - 1],
+                                )
+                                latest_map = st.session_state.get(
+                                    "pivot_col_order", {}
+                                )
+                                if not isinstance(latest_map, dict):
+                                    latest_map = {}
+                                latest_map[col_field] = new_order
+                                st.session_state["pivot_col_order"] = (
+                                    latest_map
+                                )
+                                col_order_values = new_order
+                                st.rerun()
+                        if move_down.button(
+                            "下移", key=f"pivot_col_order_down_{col_key}"
+                        ):
+                            new_order = list(col_order_values)
+                            idx_pos = new_order.index(selected_col_value)
+                            if idx_pos < len(new_order) - 1:
+                                new_order[idx_pos + 1], new_order[idx_pos] = (
+                                    new_order[idx_pos],
+                                    new_order[idx_pos + 1],
+                                )
+                                latest_map = st.session_state.get(
+                                    "pivot_col_order", {}
+                                )
+                                if not isinstance(latest_map, dict):
+                                    latest_map = {}
+                                latest_map[col_field] = new_order
+                                st.session_state["pivot_col_order"] = (
+                                    latest_map
+                                )
+                                col_order_values = new_order
+                                st.rerun()
+                        st.caption(
+                            "当前顺序：" + " → ".join(col_order_values)
+                        )
 
         if idx and col and val and aggs:
             # 1. 透视表
