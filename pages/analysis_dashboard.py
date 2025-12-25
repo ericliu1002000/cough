@@ -21,7 +21,6 @@ from utils import (
 # 引入插件系统
 from analysis_methods import CALC_METHODS, AGG_METHODS
 # 引入独立的图表组件
-from charts.classic import draw_spaghetti_chart, build_spaghetti_fig, render_spaghetti_fig
 from charts.boxplot import (
     build_boxplot_matrix_fig,
     compute_boxplot_range,
@@ -37,7 +36,6 @@ from charts.uniform import (
 from exports.charts import build_charts_export_html
 from exports.common import df_to_csv_bytes
 from exports.pivot import nested_pivot_to_excel_bytes
-from views.pivot_classic import render_pivot_classic
 from views.pivot_nested import render_pivot_nested
 
 page_title = st.session_state.get("page_title") or "分析仪表盘"
@@ -329,7 +327,6 @@ def main() -> None:
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
         st.session_state["pivot_values"] = p_cfg.get("values", [])
         st.session_state["pivot_aggs"] = raw_aggs
-        st.session_state["pivot_view_mode"] = p_cfg.get("view", "classic")
         row_order_cfg = p_cfg.get("row_order", {})
         row_orders: dict[str, list[str]] = {}
         if isinstance(row_order_cfg, dict):
@@ -565,7 +562,6 @@ def main() -> None:
                     "columns": st.session_state.get("pivot_columns", []),
                     "values": st.session_state.get("pivot_values", []),
                     "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
-                    "view": st.session_state.get("pivot_view_mode", "classic"),
                     "row_order": row_orders_map,
                     "col_order": st.session_state.get("pivot_col_order", {}),
                     "uniform_control_group": st.session_state.get(
@@ -706,25 +702,6 @@ def main() -> None:
                 default=default_aggs,
                 key="pivot_aggs",
             )
-
-        view_labels = {"classic": "经典透视表", "nested": "嵌套透视表"}
-        view_options = list(view_labels.values())
-        current_view = st.session_state.get("pivot_view_mode", "classic")
-        current_label = view_labels.get(current_view, view_options[0])
-        try:
-            view_index = view_options.index(current_label)
-        except ValueError:
-            view_index = 0
-        view_choice = st.radio(
-            "透视表视图",
-            view_options,
-            index=view_index,
-            horizontal=True,
-        )
-        selected_view = next(
-            key for key, label in view_labels.items() if label == view_choice
-        )
-        st.session_state["pivot_view_mode"] = selected_view
 
         row_orders_map = st.session_state.get("pivot_row_orders", {})
         if not isinstance(row_orders_map, dict):
@@ -902,110 +879,93 @@ def main() -> None:
         if idx and col and val and aggs:
             # 1. 透视表
             try:
-                view_mode = st.session_state.get("pivot_view_mode", "classic")
-                if view_mode == "nested":
-                    nested_data = render_pivot_nested(
-                        final_df,
-                        index_cols=idx,
-                        column_cols=col,
-                        value_cols=val,
-                        agg_names=aggs,
-                        row_orders=row_orders_map,
-                        col_orders=st.session_state.get("pivot_col_order", {}),
-                    )
-                    st.download_button(
-                        "📥 下载嵌套透视表（Excel）",
-                        nested_pivot_to_excel_bytes(nested_data),
-                        "pivot_table_nested.xlsx",
-                    )
-                    if len(val) != 1:
-                        st.info("折线图仅支持单一值字段。")
-                    elif not col:
-                        st.info("折线图需要至少一个列维度。")
-                    else:
-                        st.markdown("#### 📈 折线图")
-                        line_items = []
-                        line_export_items = []
-                        value_col = val[0]
-                        row_cols = idx
-                        col_orders = st.session_state.get(
-                            "pivot_col_order", {}
-                        )
-                        row_orders = row_orders_map
-                        for agg_name in aggs:
-                            for col_field in col:
-                                fig = build_pivot_line_fig(
-                                    df=final_df,
-                                    value_col=value_col,
-                                    row_key_cols=row_cols,
-                                    col_field=col_field,
-                                    agg_name=agg_name,
-                                    row_orders=row_orders,
-                                    col_orders=col_orders,
-                                )
-                                if fig is None:
-                                    continue
-                                title = f"{col_field} | {agg_name}"
-                                line_items.append({"title": title, "fig": fig})
-                                line_export_items.append(
-                                    {
-                                        "title": title,
-                                        "title_html": html.escape(title),
-                                        "fig": copy.deepcopy(fig),
-                                        "legend_items": [],
-                                        "chart_type": "line",
-                                    }
-                                )
-                        if not line_items:
-                            st.info("暂无可绘制的折线图数据。")
-                        else:
-                            max_cols = 3
-                            for start in range(0, len(line_items), max_cols):
-                                row_items = line_items[
-                                    start : start + max_cols
-                                ]
-                                cols = st.columns(max_cols)
-                                for col_idx in range(max_cols):
-                                    if col_idx >= len(row_items):
-                                        continue
-                                    item = row_items[col_idx]
-                                    with cols[col_idx]:
-                                        st.markdown(f"**{item['title']}**")
-                                        render_line_fig(
-                                            item["fig"],
-                                            key=f"pivot_line_{start + col_idx}",
-                                        )
-
-                            if line_export_items:
-                                if st.button(
-                                    "📥 下载折线图 (HTML)",
-                                    key="btn_export_line_charts",
-                                ):
-                                    full_html = build_charts_export_html(
-                                        line_export_items
-                                    )
-                                    st.download_button(
-                                        "⬇️ 保存折线图 HTML",
-                                        data=full_html.encode("utf-8"),
-                                        file_name="pivot_line_charts.html",
-                                        mime="text/html",
-                                        key="btn_export_line_charts_download",
-                                    )
+                nested_data = render_pivot_nested(
+                    final_df,
+                    index_cols=idx,
+                    column_cols=col,
+                    value_cols=val,
+                    agg_names=aggs,
+                    row_orders=row_orders_map,
+                    col_orders=st.session_state.get("pivot_col_order", {}),
+                )
+                st.download_button(
+                    "📥 下载嵌套透视表（Excel）",
+                    nested_pivot_to_excel_bytes(nested_data),
+                    "pivot_table_nested.xlsx",
+                )
+                if len(val) != 1:
+                    st.info("折线图仅支持单一值字段。")
+                elif not col:
+                    st.info("折线图需要至少一个列维度。")
                 else:
-                    pivot = render_pivot_classic(
-                        final_df,
-                        index_cols=idx,
-                        column_cols=col,
-                        value_cols=val,
-                        agg_names=aggs,
-                        row_orders=row_orders_map,
-                        col_orders=st.session_state.get("pivot_col_order", {}),
+                    st.markdown("#### 📈 折线图")
+                    line_items = []
+                    line_export_items = []
+                    value_col = val[0]
+                    row_cols = idx
+                    col_orders = st.session_state.get(
+                        "pivot_col_order", {}
                     )
-                    st.download_button(
-                        "📥 下载透视表",
-                        df_to_csv_bytes(pivot, index=True),
-                        "pivot_table_multi_agg.csv",
-                    )
+                    row_orders = row_orders_map
+                    for agg_name in aggs:
+                        for col_field in col:
+                            fig = build_pivot_line_fig(
+                                df=final_df,
+                                value_col=value_col,
+                                row_key_cols=row_cols,
+                                col_field=col_field,
+                                agg_name=agg_name,
+                                row_orders=row_orders,
+                                col_orders=col_orders,
+                            )
+                            if fig is None:
+                                continue
+                            title = f"{col_field} | {agg_name}"
+                            line_items.append({"title": title, "fig": fig})
+                            line_export_items.append(
+                                {
+                                    "title": title,
+                                    "title_html": html.escape(title),
+                                    "fig": copy.deepcopy(fig),
+                                    "legend_items": [],
+                                    "chart_type": "line",
+                                }
+                            )
+                    if not line_items:
+                        st.info("暂无可绘制的折线图数据。")
+                    else:
+                        max_cols = 3
+                        for start in range(0, len(line_items), max_cols):
+                            row_items = line_items[
+                                start : start + max_cols
+                            ]
+                            cols = st.columns(max_cols)
+                            for col_idx in range(max_cols):
+                                if col_idx >= len(row_items):
+                                    continue
+                                item = row_items[col_idx]
+                                with cols[col_idx]:
+                                    st.markdown(f"**{item['title']}**")
+                                    render_line_fig(
+                                        item["fig"],
+                                        key=f"pivot_line_{start + col_idx}",
+                                    )
+
+                        if line_export_items:
+                            if st.button(
+                                "📥 下载折线图 (HTML)",
+                                key="btn_export_line_charts",
+                            ):
+                                full_html = build_charts_export_html(
+                                    line_export_items
+                                )
+                                st.download_button(
+                                    "⬇️ 保存折线图 HTML",
+                                    data=full_html.encode("utf-8"),
+                                    file_name="pivot_line_charts.html",
+                                    mime="text/html",
+                                    key="btn_export_line_charts_download",
+                                )
             except Exception as e:
                 st.error(f"透视失败: {e}")
 
@@ -1092,7 +1052,7 @@ def main() -> None:
                         value_col = val[0]
                         chart_type = st.radio(
                             "图表类型",
-                            ["经典", "统一坐标", "箱线图"],
+                            ["统一坐标", "箱线图"],
                             horizontal=True,
                             key="chart_type_mode",
                         )
@@ -1140,10 +1100,6 @@ def main() -> None:
                                 st.session_state.get("uniform_control_group"),
                                 key="uniform_control_group",
                             )
-
-                        # 绘图使用的聚合函数：取多选聚合函数中的第一个作为参考线
-                        primary_agg_name = aggs[0] if aggs else "Mean - 平均值"
-                        actual_func_for_plot = AGG_METHODS.get(primary_agg_name, "mean")
 
                     # 为每个行组合分配一个固定颜色，使同一行组合下不同列维度的图表颜色一致
                     color_palette = [
@@ -1297,36 +1253,25 @@ def main() -> None:
                             internal_title = ""
                             key_suffix = f"r{row_idx}_c{col_idx}"
 
-                            if use_uniform_chart:
-                                control_mean = None
-                                control_median = None
-                                if control_group:
-                                    stats = control_stats_by_row.get(
-                                        build_row_key_sig(row_key)
-                                    )
-                                    if stats:
-                                        control_mean, control_median = stats
-                                fig = build_uniform_spaghetti_fig(
-                                    df=cell,
-                                    subj_col=subj_col,
-                                    value_col=value_col,
-                                    title=internal_title,
-                                    x_range=uniform_x_range,
-                                    y_max_count=uniform_y_max,
-                                    control_mean=control_mean,
-                                    control_median=control_median,
-                                    marker_color=chart_color,
+                            control_mean = None
+                            control_median = None
+                            if control_group:
+                                stats = control_stats_by_row.get(
+                                    build_row_key_sig(row_key)
                                 )
-                            else:
-                                fig = build_spaghetti_fig(
-                                    df=cell,
-                                    subj_col=subj_col,
-                                    value_col=value_col,
-                                    title=internal_title,
-                                    agg_func=actual_func_for_plot,
-                                    agg_name=primary_agg_name,
-                                    marker_color=chart_color,
-                                )
+                                if stats:
+                                    control_mean, control_median = stats
+                            fig = build_uniform_spaghetti_fig(
+                                df=cell,
+                                subj_col=subj_col,
+                                value_col=value_col,
+                                title=internal_title,
+                                x_range=uniform_x_range,
+                                y_max_count=uniform_y_max,
+                                control_mean=control_mean,
+                                control_median=control_median,
+                                marker_color=chart_color,
+                            )
                             if fig is None:
                                 return
 
@@ -1353,49 +1298,44 @@ def main() -> None:
                             if isinstance(meta, dict):
                                 legend_items = meta.get("legend_items", [])
 
-                            if use_uniform_chart:
-                                render_uniform_spaghetti_fig(
-                                    fig, key=f"c_{key_suffix}"
-                                )
-                                if legend_items:
-                                    legend_lines = []
-                                    for item in legend_items:
-                                        dash_style = (
-                                            "dashed"
-                                            if item.get("dash") == "dash"
-                                            else "solid"
-                                        )
-                                        line_color = item.get("color", "#c00")
-                                        label_text = html.escape(
-                                            str(item.get("label", "Agg"))
-                                        )
-                                        value_text = item.get("value")
-                                        try:
-                                            value_fmt = (
-                                                f"{float(value_text):.2f}"
-                                            )
-                                        except Exception:
-                                            value_fmt = "-"
-                                        legend_lines.append(
-                                            "<div style='display:flex;"
-                                            "justify-content:center;align-items:center;"
-                                            f"gap:8px;font-size:12px;color:{line_color};"
-                                            "line-height:1.2;margin-top:2px;'>"
-                                            f"<span style='display:inline-block;"
-                                            f"width:32px;border-top:3px {dash_style} {line_color};'></span>"
-                                            f"<span>{label_text}: {value_fmt}</span>"
-                                            "</div>"
-                                        )
-                                    st.markdown(
-                                        (
-                                            "<div style='margin-top:4px;'>"
-                                            + "".join(legend_lines)
-                                            + "</div>"
-                                        ),
-                                        unsafe_allow_html=True,
+                            render_uniform_spaghetti_fig(
+                                fig, key=f"c_{key_suffix}"
+                            )
+                            if legend_items:
+                                legend_lines = []
+                                for item in legend_items:
+                                    dash_style = (
+                                        "dashed"
+                                        if item.get("dash") == "dash"
+                                        else "solid"
                                     )
-                            else:
-                                render_spaghetti_fig(fig, key=f"c_{key_suffix}")
+                                    line_color = item.get("color", "#c00")
+                                    label_text = html.escape(
+                                        str(item.get("label", "Agg"))
+                                    )
+                                    value_text = item.get("value")
+                                    try:
+                                        value_fmt = f"{float(value_text):.2f}"
+                                    except Exception:
+                                        value_fmt = "-"
+                                    legend_lines.append(
+                                        "<div style='display:flex;"
+                                        "justify-content:center;align-items:center;"
+                                        f"gap:8px;font-size:12px;color:{line_color};"
+                                        "line-height:1.2;margin-top:2px;'>"
+                                        f"<span style='display:inline-block;"
+                                        f"width:32px;border-top:3px {dash_style} {line_color};'></span>"
+                                        f"<span>{label_text}: {value_fmt}</span>"
+                                        "</div>"
+                                    )
+                                st.markdown(
+                                    (
+                                        "<div style='margin-top:4px;'>"
+                                        + "".join(legend_lines)
+                                        + "</div>"
+                                    ),
+                                    unsafe_allow_html=True,
+                                )
 
                             all_figs.append(
                                 {
@@ -1403,11 +1343,7 @@ def main() -> None:
                                     "title_html": title_html,
                                     "fig": fig_for_export,
                                     "legend_items": legend_items,
-                                    "chart_type": (
-                                        "uniform"
-                                        if use_uniform_chart
-                                        else "classic"
-                                    ),
+                                    "chart_type": "uniform",
                                 }
                             )
                             count += 1
@@ -1418,46 +1354,25 @@ def main() -> None:
                                 break
                             group_color = color_palette[i % len(color_palette)]
 
-                            if use_uniform_chart:
-                                for chunk_start in range(
-                                    0, len(col_keys), max_cols_per_row
-                                ):
-                                    if stop_render:
+                            for chunk_start in range(
+                                0, len(col_keys), max_cols_per_row
+                            ):
+                                if stop_render:
+                                    break
+                                chunk = col_keys[
+                                    chunk_start : chunk_start
+                                    + max_cols_per_row
+                                ]
+                                cols = st.columns(max_cols_per_row)
+                                for col_pos, ck in enumerate(chunk):
+                                    if count >= limit:
+                                        stop_render = True
                                         break
-                                    chunk = col_keys[
-                                        chunk_start : chunk_start
-                                        + max_cols_per_row
-                                    ]
-                                    cols = st.columns(max_cols_per_row)
-                                    for col_pos, ck in enumerate(chunk):
-                                        if count >= limit:
-                                            stop_render = True
-                                            break
-                                        j = chunk_start + col_pos
-                                        with cols[col_pos]:
-                                            render_cell_chart(
-                                                rk, ck, i, j, group_color
-                                            )
-                            else:
-                                for chunk_start in range(
-                                    0, len(col_keys), max_cols_per_row
-                                ):
-                                    if stop_render:
-                                        break
-                                    chunk = col_keys[
-                                        chunk_start : chunk_start
-                                        + max_cols_per_row
-                                    ]
-                                    cols = st.columns(max_cols_per_row)
-                                    for col_pos, ck in enumerate(chunk):
-                                        if count >= limit:
-                                            stop_render = True
-                                            break
-                                        j = chunk_start + col_pos
-                                        with cols[col_pos]:
-                                            render_cell_chart(
-                                                rk, ck, i, j, group_color
-                                            )
+                                    j = chunk_start + col_pos
+                                    with cols[col_pos]:
+                                        render_cell_chart(
+                                            rk, ck, i, j, group_color
+                                        )
 
                     # 在图表区域顶部给出生成数量和时间提示
                     from datetime import datetime

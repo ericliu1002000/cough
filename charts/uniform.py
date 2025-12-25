@@ -4,9 +4,15 @@ import streamlit as st
 from typing import Dict, List, Optional
 
 # 使用场景：统一坐标系的横向柱状图，用于跨单元格横向对比。
-
-
-
+# TODO 1. 所有图表最小值为X轴起点。即：所有柱状图的柱子统一朝向。
+# TODO 底下箱线图最大， 最小值可以去掉。 盒子胖一点， 星号不要在盒子外。
+# TODO 图表排布顺序可控。 联动透视图顺序。 保持：透视图， 柱状图， 拆线图， 导出数据， 导出图表 排序一致。
+# TODO 简单的用户登陆系统，可选在使用的电脑上设置hosts来进行低调访问。
+# TODO 添加对数相关的统计插件。
+# TODO Patient Profile Book 患者资料展示的顺序可调整。
+# TODO analysis_setups 支持根据值域进行检索：实现思路基本上是先查询出来 analysis_setups 里面都针对哪些值进行了分析，然后在展示profile的时候进行关联。
+# TODO 根据54张表， 可能需要单独为每个表的出场顺序， 列的排序进行重新设置。
+# TODO 接收随时可能过来的新的表，以及亚组
 def compute_uniform_axes(
     df: pd.DataFrame,
     row_key_cols: List[str],
