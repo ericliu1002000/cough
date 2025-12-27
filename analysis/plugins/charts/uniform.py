@@ -108,6 +108,9 @@ def build_uniform_spaghetti_fig(
     # 使用数值轴模拟“类别轴”，便于固定范围并留白
     start_pos = y_total_count - 1
     y_positions = list(range(start_pos, start_pos - len(x_vals), -1))
+    y_position_map = {
+        str(pos): label for pos, label in zip(y_positions, y_labels)
+    }
 
     # 绘图区由容器宽度决定（在渲染阶段用 CSS 固定为正方形）
 
@@ -228,6 +231,7 @@ def build_uniform_spaghetti_fig(
             "legend_items": legend_items,
             "boxplot_trace_index": box_trace_index,
             "mean_marker_trace_index": mean_marker_index,
+            "y_position_map": y_position_map,
         },
     )
 
@@ -352,14 +356,27 @@ def render_uniform_spaghetti_fig(fig: "go.Figure", key: str) -> None:
                 and pt.get("curveNumber") == mean_marker_trace_index
             ):
                 return
+            selected_id = None
             custom_data = pt.get("customdata")
             if isinstance(custom_data, list):
-                selected_id = custom_data[0]
-            else:
+                if custom_data:
+                    selected_id = custom_data[0]
+            elif custom_data is not None:
                 selected_id = custom_data
 
             if selected_id is None:
-                selected_id = pt.get("y")
+                y_val = pt.get("y")
+                meta = getattr(fig.layout, "meta", None)
+                if isinstance(meta, dict):
+                    pos_map = meta.get("y_position_map")
+                    if isinstance(pos_map, dict) and y_val is not None:
+                        if isinstance(y_val, (int, float)) and int(y_val) == y_val:
+                            y_key = str(int(y_val))
+                        else:
+                            y_key = str(y_val)
+                        selected_id = pos_map.get(y_key)
+                if selected_id is None and y_val is not None:
+                    selected_id = y_val
 
             if selected_id is not None:
                 st.session_state["selected_subject_id"] = selected_id

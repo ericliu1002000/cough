@@ -190,6 +190,26 @@ def build_pivot_line_fig(
             agg_val = None
         agg_map[(row_tuple, col_val)] = _coerce_number(agg_val)
 
+    y_min = None
+    y_max = None
+    for row_tuple in row_key_tuples:
+        for x_val in x_values:
+            y_val = agg_map.get((row_tuple, x_val))
+            if y_val is None:
+                continue
+            low = y_val
+            high = y_val
+            if error_mode:
+                err_val = error_map.get((row_tuple, x_val))
+                if err_val is not None:
+                    err_val = abs(err_val)
+                    low = y_val - err_val
+                    high = y_val + err_val
+            if y_min is None or low < y_min:
+                y_min = low
+            if y_max is None or high > y_max:
+                y_max = high
+
     color_palette = [
         "#1f77b4",
         "#ff7f0e",
@@ -270,6 +290,7 @@ def build_pivot_line_fig(
         type="category",
         categoryorder="array",
         categoryarray=x_values,
+        range=[-0.5, len(x_values) - 0.5],
         automargin=True,
     )
     if show_counts:
@@ -288,12 +309,19 @@ def build_pivot_line_fig(
             ticktext=tick_texts,
         )
     fig.update_xaxes(**xaxis_kwargs)
-    fig.update_yaxes(
+    yaxis_kwargs = dict(
         title=f"{agg_name} ({value_col})",
         automargin=True,
         showgrid=True,
         gridcolor="#e6e6e6",
     )
+    if y_min is not None and y_max is not None:
+        if y_min == y_max:
+            pad = 1.0 if y_min == 0 else abs(y_min) * 0.05
+            y_min -= pad
+            y_max += pad
+        yaxis_kwargs["range"] = [y_min, y_max]
+    fig.update_yaxes(**yaxis_kwargs)
     return fig
 
 

@@ -725,13 +725,17 @@ def main() -> None:
                     if "Mean - 平均值" in line_aggs:
                         error_mode = st.radio(
                             "均值误差条",
-                            ["SE", "SD"],
+                            ["无", "SE", "SD"],
                             horizontal=True,
                             key="line_error_mode",
+                            index=0,
                         )
                     for agg_name in line_aggs:
                         for col_field in col:
                             is_mean = agg_name == "Mean - 平均值"
+                            resolved_error = None
+                            if is_mean and error_mode and error_mode != "无":
+                                resolved_error = error_mode
                             fig = build_pivot_line_fig(
                                 df=final_df,
                                 value_col=value_col,
@@ -740,7 +744,7 @@ def main() -> None:
                                 agg_name=agg_name,
                                 row_orders=row_orders,
                                 col_orders=col_orders,
-                                error_mode=error_mode if is_mean else None,
+                                error_mode=resolved_error,
                                 show_counts=is_mean,
                             )
                             if fig is None:

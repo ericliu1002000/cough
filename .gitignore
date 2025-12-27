@@ -48,7 +48,6 @@ certs/
 
 # 上传/导出的用户文件
 uploads/
-exports/
 
 
 # Celery
