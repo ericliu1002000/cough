@@ -133,6 +133,10 @@ def main() -> None:
         st.session_state["pivot_columns"] = p_cfg.get("columns", [])
         st.session_state["pivot_values"] = p_cfg.get("values", [])
         st.session_state["pivot_aggs"] = raw_aggs
+        agg_axis_cfg = p_cfg.get("agg_axis", "row")
+        if agg_axis_cfg not in {"row", "col"}:
+            agg_axis_cfg = "row"
+        st.session_state["pivot_agg_axis"] = agg_axis_cfg
         row_order_cfg = p_cfg.get("row_order", {})
         row_orders: dict[str, list[str]] = {}
         if isinstance(row_order_cfg, dict):
@@ -152,6 +156,7 @@ def main() -> None:
         st.session_state["pivot_row_orders"] = row_orders
         st.session_state.pop("pivot_row_order_field", None)
         st.session_state.pop("pivot_row_order_values", None)
+        st.session_state.pop("pivot_agg_axis_ui", None)
         col_order_cfg = p_cfg.get("col_order", {})
         if not isinstance(col_order_cfg, dict):
             col_order_cfg = {}
@@ -368,6 +373,7 @@ def main() -> None:
                     "columns": st.session_state.get("pivot_columns", []),
                     "values": st.session_state.get("pivot_values", []),
                     "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
+                    "agg_axis": st.session_state.get("pivot_agg_axis", "row"),
                     "row_order": row_orders_map,
                     "col_order": st.session_state.get("pivot_col_order", {}),
                     "uniform_control_group": st.session_state.get(
@@ -511,6 +517,22 @@ def main() -> None:
                 default=default_aggs,
                 key="pivot_aggs",
             )
+            agg_axis_labels = {"按行": "row", "按列": "col"}
+            current_axis = st.session_state.get("pivot_agg_axis", "row")
+            default_label = "按列" if current_axis == "col" else "按行"
+            axis_label_col, axis_radio_col = st.columns([1, 3])
+            with axis_label_col:
+                st.markdown("统计量布局")
+            with axis_radio_col:
+                selected_label = st.radio(
+                    "统计量布局",
+                    list(agg_axis_labels.keys()),
+                    index=list(agg_axis_labels.keys()).index(default_label),
+                    horizontal=True,
+                    key="pivot_agg_axis_ui",
+                    label_visibility="collapsed",
+                )
+            st.session_state["pivot_agg_axis"] = agg_axis_labels[selected_label]
 
         row_orders_map = st.session_state.get("pivot_row_orders", {})
         if not isinstance(row_orders_map, dict):
@@ -696,10 +718,14 @@ def main() -> None:
                     agg_names=aggs,
                     row_orders=row_orders_map,
                     col_orders=st.session_state.get("pivot_col_order", {}),
+                    agg_axis=st.session_state.get("pivot_agg_axis", "row"),
                 )
                 st.download_button(
                     "📥 下载嵌套透视表（Excel）",
-                    nested_pivot_to_excel_bytes(nested_data),
+                    nested_pivot_to_excel_bytes(
+                        nested_data,
+                        agg_axis=st.session_state.get("pivot_agg_axis", "row"),
+                    ),
                     "pivot_table_nested.xlsx",
                 )
                 if len(val) != 1:

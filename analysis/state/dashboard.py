@@ -16,6 +16,7 @@ def reset_dashboard_state() -> None:
         "pivot_row_order_selected",
         "pivot_row_order_up",
         "pivot_row_order_down",
+        "pivot_agg_axis_ui",
         "boxplot_visible_cols",
     ]
     reset_prefixes = [

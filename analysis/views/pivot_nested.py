@@ -31,66 +31,202 @@ def _format_value(val: object) -> str:
     return str(val)
 
 
-def _build_nested_html(data: NestedPivotData) -> str:
-    """Return HTML for a nested pivot table view."""
-    row_cols = data.row_key_cols
-    value_cols = data.value_cols
-    agg_names = data.agg_names
+def _build_row_span_map(
+    row_keys: List[dict], row_cols: List[str]
+) -> List[dict[int, int]]:
+    """Return per-level rowspan maps for contiguous row key prefixes."""
+    if not row_cols or not row_keys:
+        return []
 
-    col_defs = []
-    for col_key, col_tuple in zip(data.col_keys, data.col_key_tuples):
-        key_label = format_key_label(col_key)
-        if not key_label:
-            key_label = "总体"
-        for value_col in value_cols:
-            if len(value_cols) > 1:
-                label_html = (
-                    f"{html.escape(key_label)}<br>"
-                    f"{html.escape(value_col)}"
+    span_map: List[dict[int, int]] = []
+    for level in range(len(row_cols)):
+        level_spans: dict[int, int] = {}
+        start = 0
+        prev_prefix = None
+        for idx in range(len(row_keys) + 1):
+            if idx < len(row_keys):
+                prefix = tuple(
+                    row_keys[idx].get(col, "") for col in row_cols[: level + 1]
                 )
             else:
-                label_html = html.escape(key_label)
-            col_defs.append(
-                {
-                    "col_tuple": col_tuple,
-                    "value_col": value_col,
-                    "label_html": label_html,
-                }
-            )
+                prefix = None
+            if idx == 0:
+                prev_prefix = prefix
+            if idx == len(row_keys) or prefix != prev_prefix:
+                level_spans[start] = idx - start
+                start = idx
+                prev_prefix = prefix
+        span_map.append(level_spans)
+    return span_map
 
-    header_cells = "".join(
-        f"<th class='pivot-row-header'>{html.escape(col)}</th>"
-        for col in row_cols
-    )
-    header_cells += "<th class='pivot-agg-header'>统计量</th>"
-    header_cells += "".join(
-        f"<th class='pivot-col-header'>{col_def['label_html']}</th>"
-        for col_def in col_defs
-    )
-    header_html = f"<tr>{header_cells}</tr>"
+
+def _build_nested_html(data: NestedPivotData, agg_axis: str) -> str:
+    """Return HTML for a nested pivot table view."""
+    agg_axis = "col" if agg_axis == "col" else "row"
+    row_cols = data.row_key_cols
+    value_cols = list(data.value_cols or [])
+    agg_names = list(data.agg_names or [])
+    if not value_cols:
+        value_cols = ["值"]
+    if not agg_names:
+        agg_names = ["-"]
+
+    col_groups = []
+    for col_key, col_tuple in zip(data.col_keys, data.col_key_tuples):
+        key_label = format_key_label(col_key) or "总体"
+        col_groups.append({"col_tuple": col_tuple, "label": key_label})
+    if not col_groups:
+        col_groups = [{"col_tuple": (), "label": "总体"}]
+
+    col_defs = []
+    if agg_axis == "row":
+        for group in col_groups:
+            for value_col in value_cols:
+                if len(value_cols) > 1:
+                    label_html = (
+                        f"{html.escape(group['label'])}<br>"
+                        f"{html.escape(value_col)}"
+                    )
+                else:
+                    label_html = html.escape(group["label"])
+                col_defs.append(
+                    {
+                        "col_tuple": group["col_tuple"],
+                        "value_col": value_col,
+                        "label_html": label_html,
+                    }
+                )
+    else:
+        for group in col_groups:
+            for value_col in value_cols:
+                for agg_name in agg_names:
+                    if len(agg_names) > 1:
+                        if len(value_cols) > 1:
+                            label_html = (
+                                f"{html.escape(agg_name)} | "
+                                f"{html.escape(value_col)}"
+                            )
+                        else:
+                            label_html = html.escape(agg_name)
+                    elif len(value_cols) > 1:
+                        label_html = html.escape(value_col)
+                    else:
+                        label_html = html.escape(agg_name)
+                    col_defs.append(
+                        {
+                            "col_tuple": group["col_tuple"],
+                            "value_col": value_col,
+                            "agg_name": agg_name,
+                            "label_html": label_html,
+                        }
+                    )
+
+    header_rows = []
+    if agg_axis == "row":
+        header_cells = "".join(
+            f"<th class='pivot-row-header'>{html.escape(col)}</th>"
+            for col in row_cols
+        )
+        header_cells += "<th class='pivot-agg-header'>统计量</th>"
+        header_cells += "".join(
+            f"<th class='pivot-col-header'>{col_def['label_html']}</th>"
+            for col_def in col_defs
+        )
+        header_rows.append(f"<tr>{header_cells}</tr>")
+    else:
+        top_cells = "".join(
+            (
+                "<th class='pivot-row-header' rowspan='2'>"
+                f"{html.escape(col)}</th>"
+            )
+            for col in row_cols
+        )
+        group_span = max(len(value_cols), 1) * max(len(agg_names), 1)
+        for group in col_groups:
+            top_cells += (
+                "<th class='pivot-col-header' "
+                f"colspan='{group_span}'>"
+                f"{html.escape(group['label'])}</th>"
+            )
+        header_rows.append(f"<tr>{top_cells}</tr>")
+        sub_cells = "".join(
+            f"<th class='pivot-col-header'>{col_def['label_html']}</th>"
+            for col_def in col_defs
+        )
+        header_rows.append(f"<tr>{sub_cells}</tr>")
+    header_html = "".join(header_rows)
 
     body_rows = []
-    row_span = max(len(agg_names), 1)
-    for row_key, row_tuple in zip(data.row_keys, data.row_key_tuples):
-        for agg_idx, agg_name in enumerate(agg_names):
+    row_span_map = _build_row_span_map(data.row_keys, row_cols)
+    if agg_axis == "row":
+        group_size = max(len(agg_names), 1)
+        for row_idx, (row_key, row_tuple) in enumerate(
+            zip(data.row_keys, data.row_key_tuples)
+        ):
+            for agg_idx, agg_name in enumerate(agg_names):
+                row_cells = ""
+                if agg_idx == 0:
+                    for level, col in enumerate(row_cols):
+                        level_spans = (
+                            row_span_map[level]
+                            if level < len(row_span_map)
+                            else {}
+                        )
+                        span = level_spans.get(row_idx)
+                        if span:
+                            row_cells += (
+                                "<th class='pivot-row-header' "
+                                f"rowspan='{span * group_size}'>"
+                                f"{html.escape(str(row_key.get(col, '')))}</th>"
+                            )
+                row_cells += (
+                    f"<td class='pivot-agg-name'>{html.escape(agg_name)}</td>"
+                )
+                for col_def in col_defs:
+                    val = data.values.get(
+                        (
+                            row_tuple,
+                            col_def["col_tuple"],
+                            col_def["value_col"],
+                            agg_name,
+                        )
+                    )
+                    value_text = html.escape(_format_value(val))
+                    row_cells += f"<td class='pivot-cell'>{value_text}</td>"
+                row_class = (
+                    "pivot-group-start" if agg_idx == 0 else "pivot-group-row"
+                )
+                body_rows.append(f"<tr class='{row_class}'>{row_cells}</tr>")
+    else:
+        for row_idx, (row_key, row_tuple) in enumerate(
+            zip(data.row_keys, data.row_key_tuples)
+        ):
             row_cells = ""
-            if agg_idx == 0:
-                for col in row_cols:
+            for level, col in enumerate(row_cols):
+                level_spans = (
+                    row_span_map[level]
+                    if level < len(row_span_map)
+                    else {}
+                )
+                span = level_spans.get(row_idx)
+                if span:
                     row_cells += (
                         "<th class='pivot-row-header' "
-                        f"rowspan='{row_span}'>"
-                        f"{html.escape(str(row_key[col]))}</th>"
+                        f"rowspan='{span}'>"
+                        f"{html.escape(str(row_key.get(col, '')))}</th>"
                     )
-            row_cells += (
-                f"<td class='pivot-agg-name'>{html.escape(agg_name)}</td>"
-            )
             for col_def in col_defs:
                 val = data.values.get(
-                    (row_tuple, col_def["col_tuple"], col_def["value_col"], agg_name)
+                    (
+                        row_tuple,
+                        col_def["col_tuple"],
+                        col_def["value_col"],
+                        col_def["agg_name"],
+                    )
                 )
                 value_text = html.escape(_format_value(val))
                 row_cells += f"<td class='pivot-cell'>{value_text}</td>"
-            row_class = "pivot-group-start" if agg_idx == 0 else "pivot-group-row"
+            row_class = "pivot-group-start" if row_idx == 0 else "pivot-group-row"
             body_rows.append(f"<tr class='{row_class}'>{row_cells}</tr>")
 
     table_html = (
@@ -112,6 +248,7 @@ def render_pivot_nested(
     agg_names: List[str],
     row_orders: dict[str, list[str]] | None = None,
     col_orders: dict[str, list[str]] | None = None,
+    agg_axis: str = "row",
 ) -> NestedPivotData:
     """Render a nested pivot table in Streamlit and return its data model."""
     data = build_nested_pivot_data(
@@ -185,6 +322,6 @@ def render_pivot_nested(
     </style>
     """
 
-    html_block = style + _build_nested_html(data)
+    html_block = style + _build_nested_html(data, agg_axis=agg_axis)
     st.markdown(html_block, unsafe_allow_html=True)
     return data

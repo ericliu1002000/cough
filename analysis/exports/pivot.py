@@ -15,43 +15,91 @@ from openpyxl.utils import get_column_letter
 from analysis.views.pivot_utils import NestedPivotData, format_key_label
 
 
-def build_nested_pivot_export_df(data: NestedPivotData) -> pd.DataFrame:
+def build_nested_pivot_export_df(
+    data: NestedPivotData, agg_axis: str = "row"
+) -> pd.DataFrame:
     """Flatten nested pivot data into a tabular export DataFrame."""
+    agg_axis = "col" if agg_axis == "col" else "row"
+    value_cols = list(data.value_cols or []) or ["值"]
+    agg_names = list(data.agg_names or []) or ["-"]
+
     col_defs: List[Dict[str, str]] = []
     for col_key, col_tuple in zip(data.col_keys, data.col_key_tuples):
         col_label = format_key_label(col_key)
         if not col_label:
             col_label = "总体"
-        for value_col in data.value_cols:
-            if len(data.value_cols) > 1:
-                label = f"{col_label} | {value_col}"
-            else:
-                label = col_label or value_col
-            col_defs.append(
-                {
-                    "label": label,
-                    "col_tuple": col_tuple,
-                    "value_col": value_col,
-                }
-            )
+        if agg_axis == "row":
+            for value_col in value_cols:
+                if len(value_cols) > 1:
+                    label = f"{col_label} | {value_col}"
+                else:
+                    label = col_label or value_col
+                col_defs.append(
+                    {
+                        "label": label,
+                        "col_tuple": col_tuple,
+                        "value_col": value_col,
+                    }
+                )
+        else:
+            for value_col in value_cols:
+                for agg_name in agg_names:
+                    if len(agg_names) > 1:
+                        if len(value_cols) > 1:
+                            label = f"{col_label} | {agg_name} | {value_col}"
+                        else:
+                            label = f"{col_label} | {agg_name}"
+                    elif len(value_cols) > 1:
+                        label = f"{col_label} | {value_col}"
+                    else:
+                        label = col_label or value_col
+                    col_defs.append(
+                        {
+                            "label": label,
+                            "col_tuple": col_tuple,
+                            "value_col": value_col,
+                            "agg_name": agg_name,
+                        }
+                    )
 
     rows: List[Dict[str, object]] = []
     for row_key, row_tuple in zip(data.row_keys, data.row_key_tuples):
         base = {col: row_key.get(col, "") for col in data.row_key_cols}
-        for agg_name in data.agg_names:
-            row: Dict[str, object] = dict(base)
-            row["统计量"] = agg_name
+        if agg_axis == "row":
+            for agg_name in agg_names:
+                row: Dict[str, object] = dict(base)
+                row["统计量"] = agg_name
+                for col_def in col_defs:
+                    row[col_def["label"]] = data.values.get(
+                        (
+                            row_tuple,
+                            col_def["col_tuple"],
+                            col_def["value_col"],
+                            agg_name,
+                        )
+                    )
+                rows.append(row)
+        else:
+            row = dict(base)
             for col_def in col_defs:
                 row[col_def["label"]] = data.values.get(
-                    (row_tuple, col_def["col_tuple"], col_def["value_col"], agg_name)
+                    (
+                        row_tuple,
+                        col_def["col_tuple"],
+                        col_def["value_col"],
+                        col_def["agg_name"],
+                    )
                 )
             rows.append(row)
 
     return pd.DataFrame(rows)
 
 
-def nested_pivot_to_excel_bytes(data: NestedPivotData) -> bytes:
+def nested_pivot_to_excel_bytes(
+    data: NestedPivotData, agg_axis: str = "row"
+) -> bytes:
     """Render nested pivot data into an Excel workbook and return bytes."""
+    agg_axis = "col" if agg_axis == "col" else "row"
     wb = Workbook()
     ws = wb.active
     ws.title = "Pivot"
@@ -71,10 +119,10 @@ def nested_pivot_to_excel_bytes(data: NestedPivotData) -> bytes:
         agg_names = ["-"]
 
     header_rows = 2
-    row_header_cols = len(row_cols) + 1  # + 统计量
+    row_header_cols = len(row_cols) + (1 if agg_axis == "row" else 0)
     data_start_col = row_header_cols + 1
     data_start_row = header_rows + 1
-    group_size = max(len(agg_names), 1)
+    group_size = max(len(agg_names), 1) if agg_axis == "row" else 1
 
     thin = Side(style="thin", color="B0B0B0")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -134,23 +182,41 @@ def nested_pivot_to_excel_bytes(data: NestedPivotData) -> bytes:
         update_width(max_widths, idx, col_name)
         ws.merge_cells(start_row=1, end_row=2, start_column=idx, end_column=idx)
 
-    stat_col = len(row_cols) + 1
-    stat_cell = ws.cell(row=1, column=stat_col, value="统计量")
-    apply_style(stat_cell, header_fill, header_font, center_align)
-    update_width(max_widths, stat_col, "统计量")
-    ws.merge_cells(
-        start_row=1, end_row=2, start_column=stat_col, end_column=stat_col
-    )
+    if agg_axis == "row":
+        stat_col = len(row_cols) + 1
+        stat_cell = ws.cell(row=1, column=stat_col, value="统计量")
+        apply_style(stat_cell, header_fill, header_font, center_align)
+        update_width(max_widths, stat_col, "统计量")
+        ws.merge_cells(
+            start_row=1, end_row=2, start_column=stat_col, end_column=stat_col
+        )
 
     # Column headers (two-row)
     col_idx = data_start_col
     for group in col_groups:
         start_col = col_idx
-        for value_col in value_cols:
-            sub_cell = ws.cell(row=2, column=col_idx, value=value_col)
-            apply_style(sub_cell, subheader_fill, header_font, center_align)
-            update_width(max_widths, col_idx, value_col)
-            col_idx += 1
+        if agg_axis == "row":
+            for value_col in value_cols:
+                sub_cell = ws.cell(row=2, column=col_idx, value=value_col)
+                apply_style(sub_cell, subheader_fill, header_font, center_align)
+                update_width(max_widths, col_idx, value_col)
+                col_idx += 1
+        else:
+            for value_col in value_cols:
+                for agg_name in agg_names:
+                    if len(agg_names) > 1:
+                        if len(value_cols) > 1:
+                            label = f"{agg_name} | {value_col}"
+                        else:
+                            label = agg_name
+                    elif len(value_cols) > 1:
+                        label = value_col
+                    else:
+                        label = agg_names[0]
+                    sub_cell = ws.cell(row=2, column=col_idx, value=label)
+                    apply_style(sub_cell, subheader_fill, header_font, center_align)
+                    update_width(max_widths, col_idx, label)
+                    col_idx += 1
         end_col = col_idx - 1
         if start_col < end_col:
             ws.merge_cells(
@@ -163,60 +229,110 @@ def nested_pivot_to_excel_bytes(data: NestedPivotData) -> bytes:
     # Data rows
     for row_idx, row_key in enumerate(row_keys):
         row_tuple = row_key_tuples[row_idx] if row_idx < len(row_key_tuples) else ()
-        for agg_idx, agg_name in enumerate(agg_names):
-            excel_row = data_start_row + row_idx * group_size + agg_idx
-            if agg_idx == 0:
-                for col_idx, col_name in enumerate(row_cols, start=1):
-                    val = row_key.get(col_name, "")
-                    cell = ws.cell(row=excel_row, column=col_idx, value=val)
-                    apply_style(cell, row_header_fill, None, left_align)
-                    update_width(max_widths, col_idx, val)
+        if agg_axis == "row":
+            for agg_idx, agg_name in enumerate(agg_names):
+                excel_row = data_start_row + row_idx * group_size + agg_idx
+                if agg_idx == 0:
+                    for col_idx, col_name in enumerate(row_cols, start=1):
+                        val = row_key.get(col_name, "")
+                        cell = ws.cell(row=excel_row, column=col_idx, value=val)
+                        apply_style(cell, row_header_fill, None, left_align)
+                        update_width(max_widths, col_idx, val)
 
-            agg_cell = ws.cell(
-                row=excel_row, column=stat_col, value=agg_name
-            )
-            apply_style(agg_cell, agg_fill, header_font, left_align)
-            update_width(max_widths, stat_col, agg_name)
+                agg_cell = ws.cell(
+                    row=excel_row, column=stat_col, value=agg_name
+                )
+                apply_style(agg_cell, agg_fill, header_font, left_align)
+                update_width(max_widths, stat_col, agg_name)
+
+                data_col = data_start_col
+                for group in col_groups:
+                    col_tuple = group["col_tuple"]
+                    for value_col in value_cols:
+                        val = data.values.get(
+                            (row_tuple, col_tuple, value_col, agg_name)
+                        )
+                        if val is None or pd.isna(val):
+                            cell_val = "-"
+                            cell = ws.cell(
+                                row=excel_row, column=data_col, value=cell_val
+                            )
+                            apply_style(cell, None, None, center_align)
+                            update_width(max_widths, data_col, cell_val)
+                        else:
+                            try:
+                                num_val = round(float(val), 4)
+                                cell = ws.cell(
+                                    row=excel_row, column=data_col, value=num_val
+                                )
+                                apply_style(
+                                    cell,
+                                    None,
+                                    None,
+                                    right_align,
+                                    number_format="0.000",
+                                )
+                                update_width(
+                                    max_widths, data_col, f"{num_val:.3f}"
+                                )
+                            except Exception:
+                                cell_val = str(val)
+                                cell = ws.cell(
+                                    row=excel_row, column=data_col, value=cell_val
+                                )
+                                apply_style(cell, None, None, left_align)
+                                update_width(max_widths, data_col, cell_val)
+                        data_col += 1
+        else:
+            excel_row = data_start_row + row_idx
+            for col_idx, col_name in enumerate(row_cols, start=1):
+                val = row_key.get(col_name, "")
+                cell = ws.cell(row=excel_row, column=col_idx, value=val)
+                apply_style(cell, row_header_fill, None, left_align)
+                update_width(max_widths, col_idx, val)
 
             data_col = data_start_col
             for group in col_groups:
                 col_tuple = group["col_tuple"]
                 for value_col in value_cols:
-                    val = data.values.get(
-                        (row_tuple, col_tuple, value_col, agg_name)
-                    )
-                    if val is None or pd.isna(val):
-                        cell_val = "-"
-                        cell = ws.cell(row=excel_row, column=data_col, value=cell_val)
-                        apply_style(cell, None, None, center_align)
-                        update_width(max_widths, data_col, cell_val)
-                    else:
-                        try:
-                            num_val = round(float(val), 4)
-                            cell = ws.cell(
-                                row=excel_row, column=data_col, value=num_val
-                            )
-                            apply_style(
-                                cell,
-                                None,
-                                None,
-                                right_align,
-                                number_format="0.000",
-                            )
-                            update_width(
-                                max_widths, data_col, f"{num_val:.3f}"
-                            )
-                        except Exception:
-                            cell_val = str(val)
+                    for agg_name in agg_names:
+                        val = data.values.get(
+                            (row_tuple, col_tuple, value_col, agg_name)
+                        )
+                        if val is None or pd.isna(val):
+                            cell_val = "-"
                             cell = ws.cell(
                                 row=excel_row, column=data_col, value=cell_val
                             )
-                            apply_style(cell, None, None, left_align)
+                            apply_style(cell, None, None, center_align)
                             update_width(max_widths, data_col, cell_val)
-                    data_col += 1
+                        else:
+                            try:
+                                num_val = round(float(val), 4)
+                                cell = ws.cell(
+                                    row=excel_row, column=data_col, value=num_val
+                                )
+                                apply_style(
+                                    cell,
+                                    None,
+                                    None,
+                                    right_align,
+                                    number_format="0.000",
+                                )
+                                update_width(
+                                    max_widths, data_col, f"{num_val:.3f}"
+                                )
+                            except Exception:
+                                cell_val = str(val)
+                                cell = ws.cell(
+                                    row=excel_row, column=data_col, value=cell_val
+                                )
+                                apply_style(cell, None, None, left_align)
+                                update_width(max_widths, data_col, cell_val)
+                        data_col += 1
 
     # Merge row headers (hierarchical)
-    if row_cols and row_keys:
+    if agg_axis == "row" and row_cols and row_keys:
         for level, col_name in enumerate(row_cols):
             block_start = 0
             prev_key = row_keys[0]
@@ -255,7 +371,9 @@ def nested_pivot_to_excel_bytes(data: NestedPivotData) -> bytes:
         if row_keys
         else header_rows
     )
-    last_col = data_start_col + len(col_groups) * len(value_cols) - 1
+    last_col = data_start_col + len(col_groups) * len(value_cols) * len(agg_names) - 1
+    if agg_axis == "row":
+        last_col = data_start_col + len(col_groups) * len(value_cols) - 1
     for r in range(1, last_row + 1):
         for c in range(1, last_col + 1):
             cell = ws.cell(row=r, column=c)
