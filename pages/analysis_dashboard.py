@@ -1,42 +1,43 @@
+"""Streamlit analysis dashboard page."""
+
+import copy
 import html
-import json
-from urllib.parse import urlencode
-from typing import Any, Dict, List
+from typing import Any
 
 import pandas as pd
-import copy
 import streamlit as st
-from streamlit import config as st_config
-from scipy import stats  # 用于计算 ANOVA
 
-from settings import get_engine
-from utils import (
-    fetch_all_setups,
-    fetch_setup_config,
-    load_table_metadata,
-    build_sql,
-    save_calculation_config
-)
-
-# 引入插件系统
-from analysis_methods import CALC_METHODS, AGG_METHODS
-# 引入独立的图表组件
-from charts.boxplot import (
+from analysis.auth.session import require_login
+from analysis.plugins.methods import CALC_METHODS, AGG_METHODS
+from analysis.plugins.charts.boxplot import (
     build_boxplot_matrix_fig,
     compute_boxplot_range,
     render_boxplot_fig,
 )
-from charts.lineplot import build_pivot_line_fig, render_line_fig
-from charts.uniform import (
+from analysis.plugins.charts.lineplot import build_pivot_line_fig, render_line_fig
+from analysis.plugins.charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
     render_uniform_spaghetti_fig,
     resolve_uniform_control_group,
 )
-from exports.charts import build_charts_export_html
-from exports.common import df_to_csv_bytes
-from exports.pivot import nested_pivot_to_excel_bytes
-from views.pivot_nested import render_pivot_nested
+from analysis.exports.charts import build_charts_export_html
+from analysis.exports.common import df_to_csv_bytes
+from analysis.exports.pivot import nested_pivot_to_excel_bytes
+from analysis.repositories.setup_repo import (
+    fetch_all_setups,
+    fetch_setup_config,
+    save_calculation_config,
+)
+from analysis.services.analysis_service import (
+    apply_baseline_mapping,
+    apply_calculations,
+    calculate_anova_table,
+    run_analysis,
+)
+from analysis.state.dashboard import reset_dashboard_state
+from analysis.views.pivot_nested import render_pivot_nested
+from analysis.views.components.page_utils import build_page_url
 
 page_title = st.session_state.get("page_title") or "分析仪表盘"
 st.set_page_config(page_title=page_title, layout="wide")
@@ -65,185 +66,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# ==========================================
-# 核心逻辑层 (Core Logic)
-# ==========================================
-
-def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
-    """ETL层：生成SQL并获取原始数据"""
-    meta_data = load_table_metadata()
-    
-    selected_tables = config.get("selected_tables", [])
-    table_columns_map = config.get("table_columns_map", {})
-    filters = config.get("filters", {})
-    subject_blocklist = config.get("subject_blocklist", "")
-
-    sql = build_sql(
-        selected_tables=selected_tables,
-        table_columns_map=table_columns_map,
-        filters=filters,
-        subject_blocklist=subject_blocklist,
-        meta_data=meta_data,
-    )
-
-    if not sql:
-        st.error("配置错误：无法生成有效 SQL。请检查选表或筛选条件。")
-        return "", pd.DataFrame()
-
-    engine = get_engine()
-    with st.spinner("正在查询数据库..."):
-        # 设置超时防止卡死
-        with engine.connect().execution_options(timeout=60) as conn:
-            df = pd.read_sql(sql, conn)
-            
-    return sql, df
-
-
-def apply_baseline_mapping(df: pd.DataFrame, config: Dict) -> pd.DataFrame:
-    """
-    [BDS 引擎] 基线变量映射
-    将纵向数据 (Long Format) 中的基线行数值，横向广播到该受试者的每一行。
-    """
-    if not config or not isinstance(config, dict):
-        return df
-    
-    subj_col = config.get("subj_col")
-    visit_col = config.get("visit_col")
-    baseline_val = config.get("baseline_val")
-    target_cols = config.get("target_cols", [])
-
-    if not (subj_col and visit_col and baseline_val and target_cols):
-        return df
-    
-    # 容错：确保所需列存在
-    available_targets = [c for c in target_cols if c in df.columns]
-    if not available_targets:
-        return df
-    if subj_col not in df.columns or visit_col not in df.columns:
-        return df
-
-    # 1. 提取基线子集
-    # 筛选出 Visit == Baseline 的行
-    bl_mask = df[visit_col].astype(str) == str(baseline_val)
-    bl_df = df.loc[bl_mask, [subj_col] + available_targets].copy()
-    
-    # 2. 重命名生成 _BL 后缀
-    rename_map = {col: f"{col}_BL" for col in available_targets}
-    bl_df = bl_df.rename(columns=rename_map)
-    
-    # 3. 去重 (确保每个受试者只有一行基线)
-    bl_df = bl_df.drop_duplicates(subset=[subj_col])
-
-    # 4. 合并回主表 (Left Join)
-    merged_df = pd.merge(df, bl_df, on=subj_col, how="left")
-    
-    return merged_df
-
-
-def apply_calculations(df: pd.DataFrame, rules: List[Dict]) -> pd.DataFrame:
-    """
-    [计算引擎] 执行计算规则
-    支持静默失败，以便支持两段式计算 (Two-Pass Calculation)。
-    """
-    df_calc = df.copy()
-    
-    for rule in rules:
-        try:
-            name = rule['name']
-            cols = rule['cols']
-            method_name = rule['method']
-            
-            # 验证列是否存在
-            valid_cols = [c for c in cols if c in df_calc.columns]
-            
-            # 如果所需列不全（比如缺了基线列），在 Pass 1 阶段跳过
-            if len(valid_cols) < len(cols):
-                continue
-
-            # 强制转数值
-            subset = df_calc[valid_cols].apply(pd.to_numeric, errors='coerce')
-
-            # 调用插件
-            if method_name in CALC_METHODS:
-                calc_func = CALC_METHODS[method_name]
-                df_calc[name] = calc_func(subset)
-                
-        except Exception:
-            # 静默失败，允许 Pass 2 重试
-            pass
-            
-    return df_calc
-
-
-def calculate_anova_table(df: pd.DataFrame, index_col: str, group_col: str, value_col: str) -> pd.DataFrame:
-    """
-    [统计引擎] 计算组间差异 (One-Way ANOVA)
-    自动基于透视表的维度进行计算。
-    """
-    results = []
-    
-    # 确保数值有效
-    clean_df = df.dropna(subset=[value_col, group_col])
-    clean_df[value_col] = pd.to_numeric(clean_df[value_col], errors='coerce')
-    
-    # 1. 遍历行维度 (如: Day 14, Day 28)
-    row_levels = clean_df[index_col].unique()
-    
-    for level in row_levels:
-        # 取出这一层的数据
-        sub_df = clean_df[clean_df[index_col] == level]
-        
-        # 2. 按组提取数据
-        groups_data = []
-        groups = sub_df[group_col].unique()
-        
-        if len(groups) < 2:
-            results.append({
-                "Layer": level, "F-value": None, "P-value": None, "Note": "组数不足(<2)"
-            })
-            continue
-            
-        # 提取每一组的数值列表
-        for g in groups:
-            vals = sub_df[sub_df[group_col] == g][value_col].dropna().values
-            if len(vals) > 1: 
-                groups_data.append(vals)
-        
-        # 3. 计算 F/P
-        if len(groups_data) >= 2:
-            try:
-                f_stat, p_val = stats.f_oneway(*groups_data)
-                results.append({
-                    "Layer": level,
-                    "F-value": f_stat,
-                    "P-value": p_val,
-                    "Note": "Significant" if p_val < 0.05 else ""
-                })
-            except Exception:
-                results.append({"Layer": level, "F-value": None, "P-value": None, "Note": "Calc Error"})
-        else:
-            results.append({"Layer": level, "F-value": None, "P-value": None, "Note": "数据不足"})
-            
-    res_df = pd.DataFrame(results)
-    if not res_df.empty:
-        # 格式化显示
-        res_df["F-value"] = res_df["F-value"].apply(lambda x: f"{x:.3f}" if pd.notnull(x) else "-")
-        res_df["P-value"] = res_df["P-value"].apply(lambda x: f"{x:.4f}" if pd.notnull(x) else "-")
-        # 排序
-        try:
-            res_df = res_df.sort_values("Layer")
-        except:
-            pass
-        
-    return res_df
-
-
 # ==========================================
 # UI 表现层 (Main)
 # ==========================================
 
 def main() -> None:
+    """Render the main analysis dashboard page."""
+    require_login()
     # --- 1. 侧边栏 ---
     with st.sidebar:
         st.header("🧩 分析集配置")
@@ -283,32 +112,7 @@ def main() -> None:
             calc_cfg = {"calc_rules": calc_cfg}
 
         # 重置 UI 缓存，确保完全使用数据库配置
-        reset_keys = [
-            "calc_note_input",
-            "bl_subj_ui",
-            "bl_visit_ui",
-            "bl_val_ui",
-            "bl_targets_ui",
-            "ex_f",
-            "ex_v",
-            "pivot_row_order_selected",
-            "pivot_row_order_up",
-            "pivot_row_order_down",
-            "boxplot_visible_cols",
-        ]
-        reset_prefixes = [
-            "pivot_row_order_selected_",
-            "pivot_row_order_up_",
-            "pivot_row_order_down_",
-            "pivot_col_order_selected_",
-            "pivot_col_order_up_",
-            "pivot_col_order_down_",
-        ]
-        for key in reset_keys:
-            st.session_state.pop(key, None)
-        for key in list(st.session_state.keys()):
-            if any(key.startswith(prefix) for prefix in reset_prefixes):
-                st.session_state.pop(key, None)
+        reset_dashboard_state()
 
         # 覆盖缓存为数据库配置
         st.session_state["calc_rules"] = calc_cfg.get("calc_rules", [])
@@ -607,6 +411,7 @@ def main() -> None:
         all_final_cols = list(final_df.columns)
 
         def normalize_pivot_selection(key: str) -> None:
+            """Normalize pivot selection session state to a valid column list."""
             cur = st.session_state.get(key, [])
             if isinstance(cur, str):
                 cur_list = [cur]
@@ -626,6 +431,7 @@ def main() -> None:
         def sync_pivot_row_order(
             field: str, available_values: list[str]
         ) -> list[str]:
+            """Sync row order values with the latest available options."""
             if not available_values:
                 return []
 
@@ -653,6 +459,7 @@ def main() -> None:
         def sync_pivot_col_order(
             field: str, available_values: list[str]
         ) -> list[str]:
+            """Sync column order values with the latest available options."""
             col_order_map = st.session_state.get("pivot_col_order", {})
             if not isinstance(col_order_map, dict):
                 col_order_map = {}
@@ -907,8 +714,22 @@ def main() -> None:
                         "pivot_col_order", {}
                     )
                     row_orders = row_orders_map
-                    for agg_name in aggs:
+                    line_aggs = [
+                        "Mean - 平均值",
+                        "Median - 中位数",
+                    ]
+                    line_aggs = [a for a in line_aggs if a in AGG_METHODS]
+                    error_mode = None
+                    if "Mean - 平均值" in line_aggs:
+                        error_mode = st.radio(
+                            "均值误差条",
+                            ["SE", "SD"],
+                            horizontal=True,
+                            key="line_error_mode",
+                        )
+                    for agg_name in line_aggs:
                         for col_field in col:
+                            is_mean = agg_name == "Mean - 平均值"
                             fig = build_pivot_line_fig(
                                 df=final_df,
                                 value_col=value_col,
@@ -917,6 +738,8 @@ def main() -> None:
                                 agg_name=agg_name,
                                 row_orders=row_orders,
                                 col_orders=col_orders,
+                                error_mode=error_mode if is_mean else None,
+                                show_counts=is_mean,
                             )
                             if fig is None:
                                 continue
@@ -1116,6 +939,7 @@ def main() -> None:
                     ]
 
                     def build_row_key_sig(row_key: dict) -> str:
+                        """Build a stable signature string for a row key."""
                         if not row_key_cols:
                             return "(All)"
                         return "\x1f".join(
@@ -1222,6 +1046,7 @@ def main() -> None:
                             col_idx: int,
                             chart_color: str,
                         ) -> None:
+                            """Render a single cell chart within the pivot grid."""
                             nonlocal count
 
                             cell = final_df
@@ -1418,10 +1243,11 @@ def main() -> None:
 
                         # 提供跳转到受试者档案页面的入口
                         def build_subject_profile_url(subject_id: Any) -> str:
-                            base_path = st_config.get_option("server.baseUrlPath") or ""
-                            base_prefix = f"/{base_path.strip('/')}" if base_path else ""
-                            query = urlencode({"subject_id": str(subject_id)})
-                            return f"{base_prefix}/subject_profile?{query}"
+                            """Build a link to the subject profile page."""
+                            return build_page_url(
+                                "subject_profile",
+                                {"subject_id": str(subject_id)},
+                            )
                         
                         st.link_button(
                             "🔍 在新标签页打开受试者档案",

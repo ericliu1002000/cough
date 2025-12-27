@@ -1,21 +1,25 @@
-import os
-import streamlit as st
-import pandas as pd
+"""Streamlit data builder page."""
 
-from settings import get_engine
-from utils import (
-    SUBJECT_ID_ALIASES,
-    OPERATORS,
-    load_table_metadata,
-    get_id_column,
-    get_unique_values,
-    format_value_for_sql,
-    build_sql,
+import os
+
+import pandas as pd
+import streamlit as st
+
+from analysis.auth.session import require_login
+from analysis.settings.config import get_engine
+from analysis.settings.constants import OPERATORS, SUBJECT_ID_ALIASES
+from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
+from analysis.repositories.setup_repo import (
+    delete_setup_config,
     fetch_all_setups,
     fetch_setup_config,
     save_extraction_config,
-    delete_setup_config,
 )
+from analysis.repositories.sql_builder import (
+    build_sql,
+    get_unique_values,
+)
+from analysis.state.data_builder import add_filter_row, init_filter_rows, remove_filter_row
 
 # 从环境变量读取可选的最大表数量，默认为 5
 MAX_TABLE_NUMBER = int(os.getenv("MAX_TABLE_NUMBER", "5"))
@@ -25,6 +29,7 @@ MAX_TABLE_NUMBER = int(os.getenv("MAX_TABLE_NUMBER", "5"))
 # ===========================
 
 st.set_page_config(page_title="临床数据拼表器", layout="wide")
+require_login()
 st.title("🏥 临床试验数据拼表工具")
 
 meta_data = load_table_metadata()
@@ -32,15 +37,7 @@ all_tables = list(meta_data.keys())
 
 # --- Session State 初始化 ---
 # filter_rows: 存储筛选条件的列表，每项是一个 dict
-if "filter_rows" not in st.session_state:
-    st.session_state.filter_rows = []
-
-def add_filter_row():
-    # 添加一个空的占位符，ID 为当前长度
-    st.session_state.filter_rows.append({"id": len(st.session_state.filter_rows)})
-
-def remove_filter_row(idx):
-    st.session_state.filter_rows.pop(idx)
+init_filter_rows()
 
 # --- 侧边栏 ---
 with st.sidebar:

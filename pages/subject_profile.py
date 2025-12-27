@@ -1,17 +1,17 @@
-from typing import Any, Dict, List, Optional
+"""Streamlit subject profile page."""
+
+from typing import Any, Optional
 
 import pandas as pd
 import streamlit as st
 
-from sqlalchemy import text
-
-from settings import get_engine
-from utils import load_table_metadata, get_id_column
-from exports.subject_profile import (
+from analysis.auth.session import require_login
+from analysis.exports.subject_profile import (
     to_csv_sections_bytes,
     to_excel_bytes,
     to_excel_sections_bytes,
 )
+from analysis.services.subject_service import query_subject_tables
 
 
 st.set_page_config(page_title="受试者档案", layout="wide")
@@ -19,6 +19,7 @@ st.title("🧬 受试者全表档案")
 
 
 def _get_query_param(name: str) -> Optional[str]:
+    """Read a query parameter from Streamlit's query params."""
     try:
         params = st.query_params
         if hasattr(params, "get"):
@@ -35,51 +36,9 @@ def _get_query_param(name: str) -> Optional[str]:
     return None
 
 
-def _quote_ident(name: str) -> str:
-    parts = [p.strip("`") for p in str(name).split(".") if p]
-    return ".".join(f"`{p.replace('`', '``')}`" for p in parts)
-
-
-
-
-def query_subject_tables(subject_id: Any) -> Dict[str, pd.DataFrame]:
-    """
-    针对单个受试者，从所有带有 ID 列的表中拉取数据。
-
-    返回:
-        {table_name: df_for_subject, ...} 只包含有记录的表。
-    """
-    results: Dict[str, pd.DataFrame] = {}
-
-    if subject_id is None or subject_id == "":
-        return results
-
-    meta = load_table_metadata()
-    engine = get_engine()
-
-    for table_name, _cols in meta.items():
-        id_col = get_id_column(table_name, meta)
-        if not id_col:
-            continue
-
-        # 使用 SQLAlchemy 的 text + 命名参数，避免直接把 :sid 拼到原始 SQL 里导致语法错误
-        sql = text(
-            f"SELECT * FROM {_quote_ident(table_name)} WHERE {_quote_ident(id_col)} = :sid"
-        )
-        try:
-            with engine.connect() as conn:
-                df = pd.read_sql(sql, conn, params={"sid": subject_id})
-        except Exception as e:
-            st.warning(f"读取表 `{table_name}` 失败：{e}")
-            continue
-
-        if not df.empty:
-            results[table_name] = df
-
-    return results
-
-
 def main() -> None:
+    """Render the subject profile page."""
+    require_login()
     # 1. 确定当前受试者 ID
     query_subject_id = _get_query_param("subject_id")
     if query_subject_id:
@@ -104,7 +63,9 @@ def main() -> None:
     st.markdown(f"### 当前受试者：`{subject_id}`")
 
     # 2. 查询所有表
-    subject_tables = query_subject_tables(subject_id)
+    subject_tables, warnings = query_subject_tables(subject_id)
+    for warn in warnings:
+        st.warning(warn)
 
     if not subject_tables:
         st.warning("在当前配置的表中未找到该受试者的任何记录。")

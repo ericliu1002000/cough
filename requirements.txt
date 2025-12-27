@@ -7,3 +7,5 @@ streamlit
 cryptography
 plotly==6.4.0
 scipy
+pytest
+watchdog
