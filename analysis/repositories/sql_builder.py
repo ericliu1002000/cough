@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from analysis.settings.config import get_engine
+from analysis.settings.logging import log_exception
 from analysis.repositories.metadata_repo import get_id_column
 
 
@@ -21,6 +22,10 @@ def get_unique_values(table: str, column: str, limit: int = 100) -> List[str]:
         values = df.iloc[:, 0].dropna().astype(str).tolist()
         return sorted(values)
     except Exception:
+        log_exception(
+            "sql_builder.get_unique_values failed",
+            {"table": table, "column": column},
+        )
         return []
 
 

@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from analysis.auth.session import require_login
+from analysis.settings.logging import log_access
 from analysis.exports.subject_profile import (
     to_csv_sections_bytes,
     to_excel_bytes,
@@ -39,6 +40,7 @@ def _get_query_param(name: str) -> Optional[str]:
 def main() -> None:
     """Render the subject profile page."""
     require_login()
+    log_access("subject_profile")
     # 1. 确定当前受试者 ID
     query_subject_id = _get_query_param("subject_id")
     if query_subject_id:

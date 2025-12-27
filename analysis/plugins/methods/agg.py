@@ -32,7 +32,7 @@ def sas_quantile(data: pd.Series, q: float) -> float:
     return vals[idx - 1]
 
 
-@register_agg_method("n - 例数")
+@register_agg_method("N")
 def agg_n(series: pd.Series) -> int:
     """Return non-missing count for a series."""
     return pd.to_numeric(series, errors="coerce").count()
@@ -152,7 +152,7 @@ def agg_gcv_percent(series: pd.Series) -> float:
     return np.sqrt(np.exp(var_log) - 1.0) * 100.0
 
 
-@register_agg_method("Format: n (Missing) - 例数(缺失)")
+@register_agg_method(" n (Missing) - 例数(缺失)")
 def agg_fmt_n_missing(series: pd.Series) -> str:
     """Return formatted count and missing text (e.g., 47(0))."""
     s = pd.to_numeric(series, errors="coerce")
@@ -161,7 +161,7 @@ def agg_fmt_n_missing(series: pd.Series) -> str:
     return f"{n}({miss})"
 
 
-@register_agg_method("Format: Mean (SD) - 均值(标准差)")
+@register_agg_method(" Mean (SD) - 均值(标准差)")
 def agg_fmt_mean_sd(series: pd.Series) -> str:
     """Return formatted mean and SD (e.g., 10.859(3.139))."""
     s = pd.to_numeric(series, errors="coerce").dropna()
@@ -172,7 +172,7 @@ def agg_fmt_mean_sd(series: pd.Series) -> str:
     return f"{mean_val:.3f}({sd:.3f})"
 
 
-@register_agg_method("Format: Mean (SE) - 均值(标准误)")
+@register_agg_method(" Mean (SE) - 均值(标准误)")
 def agg_fmt_mean_se(series: pd.Series) -> str:
     """Return formatted mean and SE (e.g., 10.859(0.458))."""
     s = pd.to_numeric(series, errors="coerce").dropna()
@@ -183,7 +183,7 @@ def agg_fmt_mean_se(series: pd.Series) -> str:
     return f"{mean_val:.3f}({se:.3f})"
 
 
-@register_agg_method("Format: Min, Max - 范围")
+@register_agg_method(" Min, Max - 范围")
 def agg_fmt_min_max(series: pd.Series) -> str:
     """Return formatted min/max range (e.g., 3.536, 16.714)."""
     s = pd.to_numeric(series, errors="coerce").dropna()
@@ -192,7 +192,7 @@ def agg_fmt_min_max(series: pd.Series) -> str:
     return f"{s.min():.3f}, {s.max():.3f}"
 
 
-@register_agg_method("组合统计：: Median (Q1, Q3) - 中位数(四分位)")
+@register_agg_method("Median (Q1, Q3) - 中位数(四分位)")
 def agg_fmt_median_q1q3(series: pd.Series) -> str:
     """Return formatted median with quartiles (e.g., 11.143(8.179, 12.857))."""
     try:
@@ -206,7 +206,7 @@ def agg_fmt_median_q1q3(series: pd.Series) -> str:
         return "Error"
 
 
-@register_agg_method("组合统计：全量指标统计")
+@register_agg_method("全量指标统计")
 def agg_fmt_all(series: pd.Series) -> str:
     """Return a multi-line summary of all supported statistics."""
     try:

@@ -8,6 +8,7 @@ from scipy import stats
 
 from analysis.plugins.methods import CALC_METHODS
 from analysis.settings.config import get_engine
+from analysis.settings.logging import log_error, log_exception
 from analysis.repositories.metadata_repo import load_table_metadata
 from analysis.repositories.sql_builder import build_sql
 
@@ -31,12 +32,20 @@ def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
 
     if not sql:
         st.error("配置错误：无法生成有效 SQL。请检查选表或筛选条件。")
+        log_error(
+            "analysis_service.run_analysis empty_sql",
+            {"selected_tables": ",".join(selected_tables)},
+        )
         return "", pd.DataFrame()
 
     engine = get_engine()
     with st.spinner("正在查询数据库..."):
-        with engine.connect().execution_options(timeout=60) as conn:
-            df = pd.read_sql(sql, conn)
+        try:
+            with engine.connect().execution_options(timeout=60) as conn:
+                df = pd.read_sql(sql, conn)
+        except Exception:
+            log_exception("analysis_service.run_analysis query_failed")
+            raise
 
     return sql, df
 

@@ -6,6 +6,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from analysis.settings.config import get_engine
+from analysis.settings.logging import log_exception
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
 
 
@@ -44,6 +45,10 @@ def query_subject_tables(subject_id: Any) -> Tuple[Dict[str, pd.DataFrame], List
                 df = pd.read_sql(sql, conn, params={"sid": subject_id})
         except Exception as e:
             warnings.append(f"读取表 `{table_name}` 失败：{e}")
+            log_exception(
+                "subject_service.query_subject_tables failed",
+                {"table": table_name, "subject_id": subject_id},
+            )
             continue
 
         if not df.empty:

@@ -17,6 +17,7 @@
 - analysis/: 核心业务包。
 - data/: 本地样例数据。
 - docs/: 规划与业务说明。
+- logs/: 访问与错误日志。
 - pages/: Streamlit 页面。
 - tests/: 自动化测试。
 - tmp/: 临时脚本与草稿。

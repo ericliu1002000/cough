@@ -10,12 +10,14 @@ from analysis.auth.session import (
     sync_auth_from_query,
     touch_session,
 )
+from analysis.settings.logging import log_access, log_event
 
 
 def main() -> None:
     """Render the login page and handle authentication."""
     st.set_page_config(page_title="登录", layout="centered")
     st.title("🔐 登录")
+    log_access("login", dedupe=True)
 
     if is_session_valid():
         touch_session()
@@ -36,10 +38,12 @@ def main() -> None:
 
     if submitted:
         if authenticate(username, password):
+            log_event("login_success", user=username)
             mark_authenticated(username)
             st.success("登录成功")
             st.switch_page("analysis_setups.py")
             st.stop()
+        log_event("login_failed", user=username or "-")
         st.error("用户名或密码错误")
 
 

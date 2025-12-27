@@ -7,6 +7,7 @@ import streamlit as st
 from sqlalchemy import text
 
 from analysis.settings.config import get_engine
+from analysis.settings.logging import log_exception
 
 
 def _normalize_json(value: Any) -> Any:
@@ -48,6 +49,7 @@ def fetch_all_setups() -> List[Dict[str, Any]]:
             rows = [dict(row) for row in result.mappings()]
         return rows
     except Exception:
+        log_exception("setup_repo.fetch_all_setups failed")
         return []
 
 
@@ -77,6 +79,7 @@ def fetch_all_setups_detail() -> List[Dict[str, Any]]:
 
         return rows
     except Exception:
+        log_exception("setup_repo.fetch_all_setups_detail failed")
         return []
 
 
@@ -134,6 +137,7 @@ def fetch_setup_config(setup_name: str) -> Dict[str, Any] | None:
         return {"extraction": extraction, "calculation": calculation}
     except Exception as e:
         st.error(f"无法加载配置 `{setup_name}`: {e}")
+        log_exception("setup_repo.fetch_setup_config failed", {"setup_name": setup_name})
         return None
 
 
@@ -171,6 +175,7 @@ def save_extraction_config(
             conn.commit()
     except Exception as e:
         st.error(f"保存一段配置 `{setup_name}` 失败: {e}")
+        log_exception("setup_repo.save_extraction_config failed", {"setup_name": setup_name})
     finally:
         engine.dispose()
 
@@ -196,6 +201,7 @@ def save_calculation_config(setup_name: str, config_data: Dict[str, Any]) -> Non
             conn.commit()
     except Exception as e:
         st.error(f"保存二段配置 `{setup_name}` 失败: {e}")
+        log_exception("setup_repo.save_calculation_config failed", {"setup_name": setup_name})
     finally:
         engine.dispose()
 
@@ -212,5 +218,6 @@ def delete_setup_config(setup_name: str) -> None:
             conn.commit()
     except Exception as e:
         st.error(f"删除配置 `{setup_name}` 失败: {e}")
+        log_exception("setup_repo.delete_setup_config failed", {"setup_name": setup_name})
     finally:
         engine.dispose()

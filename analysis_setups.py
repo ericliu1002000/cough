@@ -13,10 +13,12 @@ from analysis.repositories.setup_repo import (
     save_calculation_config,
     save_extraction_config,
 )
+from analysis.settings.logging import log_access
 from analysis.views.components.page_utils import build_page_url, truncate_text
 
 st.set_page_config(page_title="分析配置", layout="wide")
 require_login()
+log_access("analysis_setups")
 
 st.markdown(
     """

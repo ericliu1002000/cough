@@ -35,6 +35,7 @@ from analysis.services.analysis_service import (
     calculate_anova_table,
     run_analysis,
 )
+from analysis.settings.logging import log_access
 from analysis.state.dashboard import reset_dashboard_state
 from analysis.views.pivot_nested import render_pivot_nested
 from analysis.views.components.page_utils import build_page_url
@@ -73,6 +74,7 @@ st.markdown(
 def main() -> None:
     """Render the main analysis dashboard page."""
     require_login()
+    log_access("analysis_dashboard")
     # --- 1. 侧边栏 ---
     with st.sidebar:
         st.header("🧩 分析集配置")
