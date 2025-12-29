@@ -491,6 +491,40 @@ def main() -> None:
                 col_order_map[field] = cleaned
                 st.session_state["pivot_col_order"] = col_order_map
             return cleaned
+
+        def order_key_frame(
+            keys_df: pd.DataFrame,
+            key_cols: list[str],
+            order_map: dict[str, list[str]],
+        ) -> pd.DataFrame:
+            """Apply ordering rules to a key DataFrame, preserving stable order."""
+            if not key_cols or not order_map or keys_df.empty:
+                return keys_df
+
+            ordered = keys_df.copy()
+            order_cols = []
+            for col_name in key_cols:
+                order_list = order_map.get(col_name)
+                if not order_list:
+                    continue
+                if not isinstance(order_list, (list, tuple, set)):
+                    continue
+                order_values = [str(v) for v in order_list]
+                order_index = {
+                    value: idx for idx, value in enumerate(order_values)
+                }
+                ordered_col = ordered[col_name].map(
+                    lambda v: order_index.get(str(v), len(order_index))
+                )
+                order_col = f"_order_{col_name}"
+                ordered[order_col] = ordered_col
+                order_cols.append(order_col)
+
+            if not order_cols:
+                return keys_df
+
+            ordered = ordered.sort_values(order_cols, kind="stable")
+            return ordered.drop(columns=order_cols)
         
         st.markdown("<div id='pivot-dim-row-marker'></div>", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
@@ -856,12 +890,24 @@ def main() -> None:
                     row_key_cols = idx
                     col_key_cols = col
 
+                    row_orders_for_chart = (
+                        row_orders_map if isinstance(row_orders_map, dict) else {}
+                    )
+                    col_orders_for_chart = st.session_state.get(
+                        "pivot_col_order", {}
+                    )
+                    if not isinstance(col_orders_for_chart, dict):
+                        col_orders_for_chart = {}
+
                     if row_key_cols:
                         row_keys_df = (
                             final_df[row_key_cols]
                             .dropna()
                             .astype(str)
                             .drop_duplicates()
+                        )
+                        row_keys_df = order_key_frame(
+                            row_keys_df, row_key_cols, row_orders_for_chart
                         )
                         row_keys = row_keys_df.to_dict(orient="records")
                     else:
@@ -873,6 +919,9 @@ def main() -> None:
                             .dropna()
                             .astype(str)
                             .drop_duplicates()
+                        )
+                        col_keys_df = order_key_frame(
+                            col_keys_df, col_key_cols, col_orders_for_chart
                         )
                         col_keys = col_keys_df.to_dict(orient="records")
                     else:
