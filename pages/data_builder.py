@@ -34,8 +34,9 @@ require_login()
 log_access("data_builder")
 st.title("🏥 临床试验数据拼表工具")
 
-meta_data = load_table_metadata()
-all_tables = list(meta_data.keys())
+meta_data_visible = load_table_metadata(include_hidden=False)
+meta_data_all = load_table_metadata(include_hidden=True)
+all_tables = list(meta_data_visible.keys())
 
 # --- Session State 初始化 ---
 # filter_rows: 存储筛选条件的列表，每项是一个 dict
@@ -174,11 +175,11 @@ with st.expander("2. 选择展示列 (点击展开)", expanded=True):
     cols_ui = st.columns(3)
     for idx, table_name in enumerate(selected_tables):
         # 智能提示该表的 Key
-        this_id = get_id_column(table_name, meta_data)
+        this_id = get_id_column(table_name, meta_data_all)
         key_hint = f"🔑 {this_id}" if this_id else "❓ 无ID"
         
         with cols_ui[idx % 3]:
-            available_cols = meta_data.get(table_name, [])
+            available_cols = meta_data_visible.get(table_name, [])
             st.markdown(f"**{table_name}** <small style='color:gray'>({key_hint})</small>", unsafe_allow_html=True)
             col_key = f"sel_col_{table_name}"
             # 如果 Session State 中已有值（例如从已保存配置加载），则不再传 default，
@@ -225,7 +226,7 @@ if st.session_state.filter_rows:
             
             # 2. 列选择 (基于表)
             with c2:
-                cols = meta_data.get(t_sel, [])
+                cols = meta_data_visible.get(t_sel, [])
                 c_sel = st.selectbox("列", options=cols, key=f"f_col_{i}", label_visibility="collapsed")
             
             # 3. 操作符
@@ -318,7 +319,7 @@ if use_group_by:
                 key=f"gb_tbl_{i}",
             )
         with c2:
-            cols = meta_data.get(tbl, [])
+            cols = meta_data_visible.get(tbl, [])
             col = st.selectbox(
                 f"分组列 {i+1}",
                 options=cols,
@@ -345,7 +346,7 @@ if use_group_by:
                 key=f"agg_tbl_{i}",
             )
         with c2:
-            cols = meta_data.get(tbl, [])
+            cols = meta_data_visible.get(tbl, [])
             col = st.selectbox(
                 f"聚合列 {i+1}",
                 options=cols,
@@ -384,7 +385,7 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
         table_columns_map,
         filters_config,
         subject_blocklist,
-        meta_data,
+        meta_data_all,
         group_by=group_by_config if use_group_by else None,
         aggregations=aggregations_config if use_group_by else None,
     )

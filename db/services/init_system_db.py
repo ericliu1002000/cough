@@ -32,7 +32,57 @@ SYSTEM_TABLES: Dict[str, Dict[str, object]] = {
         "unique_indexes": {
             "uq_analysis_list_setups_setup_name": ["setup_name"]
         },
-    }
+    },
+    "business_objects": {
+        "columns": [
+            ("id", "INT NOT NULL AUTO_INCREMENT PRIMARY KEY"),
+            ("project_name", "VARCHAR(100) NOT NULL"),
+            ("object_name", "VARCHAR(255) NOT NULL"),
+            ("object_type", "VARCHAR(20) NOT NULL"),
+            ("display_name", "VARCHAR(255) NULL"),
+            ("order_index", "INT NOT NULL DEFAULT 100"),
+            ("is_visible", "TINYINT(1) NOT NULL DEFAULT 1"),
+            ("last_seen_at", "DATETIME NULL"),
+            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            (
+                "updated_at",
+                "DATETIME DEFAULT CURRENT_TIMESTAMP "
+                "ON UPDATE CURRENT_TIMESTAMP",
+            ),
+        ],
+        "unique_indexes": {
+            "uq_business_objects_project_object": [
+                "project_name",
+                "object_name",
+            ]
+        },
+    },
+    "business_columns": {
+        "columns": [
+            ("id", "INT NOT NULL AUTO_INCREMENT PRIMARY KEY"),
+            ("project_name", "VARCHAR(100) NOT NULL"),
+            ("object_name", "VARCHAR(255) NOT NULL"),
+            ("column_name", "VARCHAR(255) NOT NULL"),
+            ("data_type", "VARCHAR(64) NULL"),
+            ("display_name", "VARCHAR(255) NULL"),
+            ("order_index", "INT NOT NULL DEFAULT 100"),
+            ("is_visible", "TINYINT(1) NOT NULL DEFAULT 1"),
+            ("last_seen_at", "DATETIME NULL"),
+            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            (
+                "updated_at",
+                "DATETIME DEFAULT CURRENT_TIMESTAMP "
+                "ON UPDATE CURRENT_TIMESTAMP",
+            ),
+        ],
+        "unique_indexes": {
+            "uq_business_columns_project_object_col": [
+                "project_name",
+                "object_name",
+                "column_name",
+            ]
+        },
+    },
 }
 
 

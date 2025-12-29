@@ -6,6 +6,7 @@ from typing import Dict
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.engine import URL
 # ========================
 # 环境与路径相关配置
@@ -85,6 +86,24 @@ def _get_db_url() -> URL:
     )
 
 
+def _schema_dir_exists_error(exc: Exception) -> bool:
+    try:
+        code = exc.orig.args[0]  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    return code == 3678
+
+
+def _verify_database_access(db_url: URL, db_name: str) -> None:
+    test_engine = create_engine(db_url, echo=ENGINE_ECHO, future=True)
+    try:
+        with test_engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    finally:
+        test_engine.dispose()
+    print(f"[settings] 数据库连接可用: {db_name}")
+
+
 def _get_server_url_for_config(config: Dict[str, str]) -> URL:
     """基于传入配置构造「不指定数据库」的连接 URL。"""
     return URL.create(
@@ -135,9 +154,23 @@ def ensure_database_exists() -> None:
     )
 
     print(f"[settings] 确保数据库存在: {MYSQL_DATABASE}")
-    with engine.connect() as conn:
-        conn.execute(create_db_sql)
-        conn.commit()
+    try:
+        with engine.connect() as conn:
+            conn.execute(create_db_sql)
+            conn.commit()
+    except OperationalError as exc:
+        if _schema_dir_exists_error(exc):
+            db_url = _get_db_url()
+            try:
+                _verify_database_access(db_url, MYSQL_DATABASE)
+                return
+            except Exception as inner_exc:
+                raise RuntimeError(
+                    "检测到数据库目录已存在，但 MySQL 无法创建或连接该库。"
+                    f"请检查数据目录中 `{MYSQL_DATABASE}` 是否残留，"
+                    "删除/移动后重试，或更换数据库名。"
+                ) from inner_exc
+        raise
 
     engine.dispose()
 
@@ -168,9 +201,23 @@ def ensure_database_exists_for_config(config: Dict[str, str]) -> None:
         "COLLATE utf8mb4_unicode_ci"
     )
     print(f"[settings] 确保数据库存在: {config['database']}")
-    with engine.connect() as conn:
-        conn.execute(create_db_sql)
-        conn.commit()
+    try:
+        with engine.connect() as conn:
+            conn.execute(create_db_sql)
+            conn.commit()
+    except OperationalError as exc:
+        if _schema_dir_exists_error(exc):
+            db_url = _get_db_url_for_config(config)
+            try:
+                _verify_database_access(db_url, config["database"])
+                return
+            except Exception as inner_exc:
+                raise RuntimeError(
+                    "检测到数据库目录已存在，但 MySQL 无法创建或连接该库。"
+                    f"请检查数据目录中 `{config['database']}` 是否残留，"
+                    "删除/移动后重试，或更换数据库名。"
+                ) from inner_exc
+        raise
     engine.dispose()
 
 

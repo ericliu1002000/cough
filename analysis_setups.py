@@ -227,7 +227,7 @@ with top_right:
             "新描述",
             placeholder="描述",
         )
-        do_copy = st.button("复制配置", use_container_width=True)
+        do_copy = st.button("复制配置", width="stretch")
     st.markdown("</div>", unsafe_allow_html=True)
 
 if do_copy:

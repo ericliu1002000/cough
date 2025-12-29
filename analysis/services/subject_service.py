@@ -29,7 +29,7 @@ def query_subject_tables(subject_id: Any) -> Tuple[Dict[str, pd.DataFrame], List
     if subject_id is None or subject_id == "":
         return results, warnings
 
-    meta = load_table_metadata()
+    meta = load_table_metadata(include_hidden=True)
     engine = get_business_engine()
 
     for table_name, _cols in meta.items():

@@ -15,7 +15,7 @@ from analysis.repositories.sql_builder import build_sql
 
 def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
     """Build SQL and fetch raw data for the dashboard."""
-    meta_data = load_table_metadata()
+    meta_data = load_table_metadata(include_hidden=True)
 
     selected_tables = config.get("selected_tables", [])
     table_columns_map = config.get("table_columns_map", {})
