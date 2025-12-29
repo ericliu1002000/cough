@@ -7,7 +7,7 @@ import html
 import streamlit as st
 
 from analysis.auth.session import require_login
-from analysis.repositories.setup_repo import (
+from setup_catalog.services.analysis_list_setups import (
     fetch_all_setups_detail,
     fetch_setup_config,
     save_calculation_config,

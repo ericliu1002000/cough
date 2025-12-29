@@ -7,7 +7,7 @@ from typing import List, Set
 import pandas as pd
 from sqlalchemy import text
 
-from analysis.settings.config import DATA_DIR, get_engine
+from analysis.settings.config import DATA_DIR, get_business_engine, get_system_engine
 
 # ========================
 # 可配置业务参数
@@ -126,7 +126,6 @@ def _apply_skip_rows(df: pd.DataFrame, skip_rows: List[int]) -> pd.DataFrame:
     indices_to_drop = set()
     for row_no in skip_rows:
         if row_no <= 1:
-            # 第 1 行是表头，已作为 columns，不在 DataFrame 中
             continue
         idx = row_no - 2
         if 0 <= idx < len(df):
@@ -228,7 +227,7 @@ def init_system_tables() -> None:
     当前仅创建 analysis_list_setups 表：
     - 用于存储分析集配置（一段抽取配置 + 二段计算配置）。
     """
-    engine = get_engine()
+    engine = get_system_engine()
     ddl = """
     DROP TABLE IF EXISTS `analysis_list_setups`;
     CREATE TABLE `analysis_list_setups` (
@@ -273,7 +272,7 @@ def init_db() -> None:
     init_system_tables()
 
     # 获取数据库连接（会自动建库）
-    engine = get_engine()
+    engine = get_business_engine()
 
     # 全局：本次运行中已使用的表名集合，用于强校验
     processed_table_names: Set[str] = set()

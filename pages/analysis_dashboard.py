@@ -24,7 +24,7 @@ from analysis.plugins.charts.uniform import (
 from analysis.exports.charts import build_charts_export_html
 from analysis.exports.common import df_to_csv_bytes
 from analysis.exports.pivot import nested_pivot_to_excel_bytes
-from analysis.repositories.setup_repo import (
+from setup_catalog.services.analysis_list_setups import (
     fetch_all_setups,
     fetch_setup_config,
     save_calculation_config,

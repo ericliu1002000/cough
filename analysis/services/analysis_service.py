@@ -7,7 +7,7 @@ import streamlit as st
 from scipy import stats
 
 from analysis.plugins.methods import CALC_METHODS
-from analysis.settings.config import get_engine
+from analysis.settings.config import get_business_engine
 from analysis.settings.logging import log_error, log_exception
 from analysis.repositories.metadata_repo import load_table_metadata
 from analysis.repositories.sql_builder import build_sql
@@ -38,7 +38,7 @@ def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
         )
         return "", pd.DataFrame()
 
-    engine = get_engine()
+    engine = get_business_engine()
     with st.spinner("正在查询数据库..."):
         try:
             with engine.connect().execution_options(timeout=60) as conn:

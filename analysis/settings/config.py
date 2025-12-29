@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Dict
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -17,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 # 从项目根目录加载 .env 中的环境变量
 # 典型内容示例：
 #   MYSQL_USER=root
-#   MYSQL_PASSWORD=password
+#   MYSQL_PASSWORD=***
 #   MYSQL_DATABASE=analysis_db
 #   MYSQL_PORT=3307
 #   MYSQL_HOST=127.0.0.1
@@ -84,6 +85,30 @@ def _get_db_url() -> URL:
     )
 
 
+def _get_server_url_for_config(config: Dict[str, str]) -> URL:
+    """基于传入配置构造「不指定数据库」的连接 URL。"""
+    return URL.create(
+        drivername="mysql+pymysql",
+        username=config["user"],
+        password=config["password"] or None,
+        host=config["host"],
+        port=int(config["port"]),
+        database=None,
+    )
+
+
+def _get_db_url_for_config(config: Dict[str, str]) -> URL:
+    """基于传入配置构造带数据库名的连接 URL。"""
+    return URL.create(
+        drivername="mysql+pymysql",
+        username=config["user"],
+        password=config["password"] or None,
+        host=config["host"],
+        port=int(config["port"]),
+        database=config["database"],
+    )
+
+
 def ensure_database_exists() -> None:
     """
     确保目标数据库存在：
@@ -130,3 +155,35 @@ def get_engine():
     db_url = _get_db_url()
     engine = create_engine(db_url, echo=ENGINE_ECHO, future=True)
     return engine
+
+
+def ensure_database_exists_for_config(config: Dict[str, str]) -> None:
+    """根据传入配置确保数据库存在。"""
+    safe_db_name = config["database"].replace("`", "``")
+    server_url = _get_server_url_for_config(config)
+    engine = create_engine(server_url, echo=ENGINE_ECHO, future=True)
+    create_db_sql = text(
+        f"CREATE DATABASE IF NOT EXISTS `{safe_db_name}` "
+        "DEFAULT CHARACTER SET utf8mb4 "
+        "COLLATE utf8mb4_unicode_ci"
+    )
+    print(f"[settings] 确保数据库存在: {config['database']}")
+    with engine.connect() as conn:
+        conn.execute(create_db_sql)
+        conn.commit()
+    engine.dispose()
+
+
+def get_system_engine():
+    """系统库连接（基于 MYSQL_* 环境变量）。"""
+    return get_engine()
+
+
+def get_business_engine():
+    """业务库连接（基于 CURRENT_BUSINESS_CODE 对应的配置）。"""
+    from db.services.db_config import get_business_db_config
+
+    config = get_business_db_config()
+    ensure_database_exists_for_config(config)
+    db_url = _get_db_url_for_config(config)
+    return create_engine(db_url, echo=ENGINE_ECHO, future=True)

@@ -1,4 +1,4 @@
-"""Deprecated: use setup_catalog.services.analysis_list_setups."""
+"""系统配置服务集合。"""
 
 from setup_catalog.services.analysis_list_setups import (
     delete_setup_config,

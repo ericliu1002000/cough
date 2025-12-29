@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 from sqlalchemy import text
 
-from analysis.settings.config import get_engine
+from analysis.settings.config import get_business_engine
 from analysis.settings.logging import log_exception
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
 
@@ -30,7 +30,7 @@ def query_subject_tables(subject_id: Any) -> Tuple[Dict[str, pd.DataFrame], List
         return results, warnings
 
     meta = load_table_metadata()
-    engine = get_engine()
+    engine = get_business_engine()
 
     for table_name, _cols in meta.items():
         id_col = get_id_column(table_name, meta)

@@ -3,7 +3,7 @@
 from analysis.settings.config import get_engine
 from analysis.settings.constants import OPERATORS, SUBJECT_ID_ALIASES
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
-from analysis.repositories.setup_repo import (
+from setup_catalog.services.analysis_list_setups import (
     delete_setup_config,
     fetch_all_setups,
     fetch_all_setups_detail,

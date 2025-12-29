@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
-from analysis.settings.config import get_engine
+from analysis.settings.config import get_business_engine
 from analysis.settings.logging import log_exception
 from analysis.repositories.metadata_repo import get_id_column
 
@@ -16,7 +16,7 @@ def get_unique_values(table: str, column: str, limit: int = 100) -> List[str]:
     Fetch distinct values for a column to assist UI selection.
     """
     try:
-        engine = get_engine()
+        engine = get_business_engine()
         query = f"SELECT DISTINCT `{column}` FROM `{table}` LIMIT {limit}"
         df = pd.read_sql(query, engine)
         values = df.iloc[:, 0].dropna().astype(str).tolist()

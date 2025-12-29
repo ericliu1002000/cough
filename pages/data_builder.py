@@ -7,10 +7,10 @@ import streamlit as st
 
 from analysis.auth.session import require_login
 from analysis.settings.logging import log_access
-from analysis.settings.config import get_engine
+from analysis.settings.config import get_business_engine
 from analysis.settings.constants import OPERATORS, SUBJECT_ID_ALIASES
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
-from analysis.repositories.setup_repo import (
+from setup_catalog.services.analysis_list_setups import (
     delete_setup_config,
     fetch_all_setups,
     fetch_setup_config,
@@ -395,7 +395,7 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
         
         try:
             with st.spinner("正在查询..."):
-                engine = get_engine()
+                engine = get_business_engine()
                 # 加上 execution_options(timeout=30) 防止卡死
                 with engine.connect().execution_options(timeout=60) as conn:
                     df_result = pd.read_sql(sql, conn)

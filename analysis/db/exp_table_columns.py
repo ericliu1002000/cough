@@ -6,7 +6,7 @@ from typing import Dict, List
 
 from sqlalchemy import inspect
 
-from analysis.settings.config import get_engine
+from analysis.settings.config import get_business_engine
 
 
 def export_table_columns(output_path: Path | None = None) -> Path:
@@ -30,7 +30,7 @@ def export_table_columns(output_path: Path | None = None) -> Path:
         # 默认输出到当前 db 目录下
         output_path = Path(__file__).resolve().parent / "table_columns.json"
 
-    engine = get_engine()
+    engine = get_business_engine()
     inspector = inspect(engine)
 
     try:
