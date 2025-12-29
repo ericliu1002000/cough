@@ -138,14 +138,24 @@ def build_uniform_spaghetti_fig(
         )
     )
 
+    x_series = pd.Series(x_vals)
+    q1 = float(x_series.quantile(0.25))
+    median = float(x_series.quantile(0.5))
+    q3 = float(x_series.quantile(0.75))
+
     box_trace_index = len(fig.data)
     fig.add_trace(
         go.Box(
-            x=x_vals,
-            y=[0] * len(x_vals),
+            y=[0],
             orientation="h",
+            q1=[q1],
+            median=[median],
+            q3=[q3],
+            lowerfence=[q1],
+            upperfence=[q3],
             boxpoints=False,
-            width=0.8,
+            width=0.95,
+            whiskerwidth=0,
             line=dict(color="#111111", width=2),
             fillcolor="rgba(0,0,0,0.08)",
             hoverinfo="skip",
@@ -155,7 +165,7 @@ def build_uniform_spaghetti_fig(
 
     mean_marker_index = None
     if x_vals:
-        current_mean = float(pd.Series(x_vals).mean())
+        current_mean = float(x_series.mean())
         mean_marker_index = len(fig.data)
         fig.add_trace(
             go.Scatter(
@@ -163,10 +173,9 @@ def build_uniform_spaghetti_fig(
                 y=[0],
                 mode="markers",
                 marker=dict(
-                    symbol="asterisk-open",
-                    size=18,
+                    symbol="circle",
+                    size=10,
                     color="#111111",
-                    line=dict(color="#111111", width=1),
                 ),
                 hovertemplate=f"当前组均值: {current_mean:.2f}<extra></extra>",
                 showlegend=False,
