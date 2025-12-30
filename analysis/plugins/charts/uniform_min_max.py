@@ -1,16 +1,11 @@
-"""Uniform-axis chart helpers for pivoted data views."""
+"""Uniform min/max axis chart helpers for pivoted data views."""
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from typing import Dict, List, Optional
 
-# 使用场景：统一坐标系的横向柱状图，用于跨单元格横向对比。
-# TODO 1. 所有图表最小值为X轴起点。即：所有柱状图的柱子统一朝向。
-# TODO 添加对数相关的统计插件。
-# TODO analysis_setups 支持根据值域进行检索：实现思路基本上是先查询出来 analysis_setups 里面都针对哪些值进行了分析，然后在展示profile的时候进行关联。
 
-# TODO 增加View 视图功能， 用来支持聚合功能的计算。
 def compute_uniform_axes(
     df: pd.DataFrame,
     row_key_cols: List[str],
@@ -19,7 +14,10 @@ def compute_uniform_axes(
 ) -> tuple[Optional[tuple[float, float]], int]:
     """
     计算全局 X 轴范围和最大行数（用于统一坐标系与统一高度）。
+    X 轴范围为数据集最小值到最大值，并向左扩展 10%。
     """
+
+    
     if df.empty or not value_col or value_col not in df.columns:
         return None, 0
 
@@ -46,14 +44,14 @@ def compute_uniform_axes(
     else:
         y_max_count = int(len(plot_df))
 
-    # 统一 X 轴：默认从 0 开始（便于横向比较）
-    if x_min >= 0:
-        x_min = 0.0
-
     if x_max == x_min:
         pad = 1.0 if x_max == 0 else abs(x_max) * 0.05
         x_min -= pad
         x_max += pad
+    else:
+        pad = (x_max - x_min) * 0.1
+        x_min -= pad
+    print(f'统一坐标系 X 轴范围：({x_min}, {x_max})， 最大行数：{y_max_count}')
 
     return (x_min, x_max), y_max_count
 
@@ -69,9 +67,10 @@ def build_uniform_spaghetti_fig(
     control_median: Optional[float] = None,
     marker_color: Optional[str] = None,
 ) -> Optional["go.Figure"]:
+    
     """
     统一坐标系的横向柱状图：
-    - X 轴范围统一为全局最大值
+    - X 轴范围统一为全局最小/最大值，柱子从最小值向右延伸
     - Y 轴统一为最大行数（较少的单元格留白）
     - 所有图保持正方形尺寸
     """
@@ -89,12 +88,14 @@ def build_uniform_spaghetti_fig(
     # 按数值降序排序（柱子从上到下由大到小）
     tmp = tmp.sort_values(by=value_col, ascending=False)
 
-    x_vals = tmp[value_col].values.tolist()
+    x_vals_actual = tmp[value_col].values.tolist()
     y_labels = tmp[subj_col].values.tolist()
+    x_base = float(x_range[0]) if x_range else float(min(x_vals_actual))
+    x_vals = [float(v) - x_base for v in x_vals_actual]
 
     # 统一 Y 轴长度：若未给全局最大行数，则退回本图行数
     if y_max_count is None:
-        y_max_count = len(x_vals)
+        y_max_count = len(x_vals_actual)
     if y_max_count <= 0:
         return None
 
@@ -103,7 +104,7 @@ def build_uniform_spaghetti_fig(
 
     # 使用数值轴模拟“类别轴”，便于固定范围并留白
     start_pos = y_total_count - 1
-    y_positions = list(range(start_pos, start_pos - len(x_vals), -1))
+    y_positions = list(range(start_pos, start_pos - len(x_vals_actual), -1))
     y_position_map = {
         str(pos): label for pos, label in zip(y_positions, y_labels)
     }
@@ -114,6 +115,7 @@ def build_uniform_spaghetti_fig(
     fig.add_trace(
         go.Bar(
             x=x_vals,
+            base=x_base,
             y=y_positions,
             orientation="h",
             marker=dict(
@@ -122,19 +124,22 @@ def build_uniform_spaghetti_fig(
             ),
             showlegend=False,
             # 直接在柱子末端显示数值标签
-            text=[f"{v:.2f}" for v in x_vals],
+            text=[f"{v:.2f}" for v in x_vals_actual],
             textposition="outside",
             # 使用 customdata 保留真实的受试者标识
-            customdata=y_labels,
+            customdata=[
+                [label, value]
+                for label, value in zip(y_labels, x_vals_actual)
+            ],
             hovertemplate=(
-                f"<b>{subj_col}</b>: %{{customdata}}<br>"
-                f"<b>{value_col}</b>: %{{x}}<br>"
+                f"<b>{subj_col}</b>: %{{customdata[0]}}<br>"
+                f"<b>{value_col}</b>: %{{customdata[1]:.2f}}<br>"
                 "<extra></extra>"
             ),
         )
     )
 
-    x_series = pd.Series(x_vals)
+    x_series = pd.Series(x_vals_actual)
     q1 = float(x_series.quantile(0.25))
     median = float(x_series.quantile(0.5))
     q3 = float(x_series.quantile(0.75))
@@ -160,7 +165,7 @@ def build_uniform_spaghetti_fig(
     )
 
     mean_marker_index = None
-    if x_vals:
+    if x_vals_actual:
         current_mean = float(x_series.mean())
         mean_marker_index = len(fig.data)
         fig.add_trace(
@@ -253,7 +258,7 @@ def build_uniform_spaghetti_fig(
     )
     fig.update_yaxes(**yaxis_cfg)
 
-    # 统一 X 轴范围（全局最大值）
+    # 统一 X 轴范围（全局最小/最大值）
     if x_range:
         fig.update_xaxes(range=list(x_range))
     fig.update_xaxes(

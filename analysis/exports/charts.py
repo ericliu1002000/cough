@@ -9,7 +9,7 @@ from typing import Any
 def build_charts_export_html(items: list[dict[str, Any]]) -> str:
     """Return a full HTML document containing exported charts."""
     chart_type = items[0].get("chart_type") if items else None
-    if chart_type == "uniform":
+    if chart_type in {"uniform", "uniform_min_max"}:
         layout_class = "charts-grid"
     elif chart_type == "line":
         layout_class = "charts-line-grid"

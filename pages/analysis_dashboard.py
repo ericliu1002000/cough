@@ -21,6 +21,11 @@ from analysis.plugins.charts.uniform import (
     render_uniform_spaghetti_fig,
     resolve_uniform_control_group,
 )
+from analysis.plugins.charts.uniform_min_max import (
+    build_uniform_spaghetti_fig as build_uniform_min_max_spaghetti_fig,
+    compute_uniform_axes as compute_uniform_min_max_axes,
+    render_uniform_spaghetti_fig as render_uniform_min_max_spaghetti_fig,
+)
 from analysis.exports.charts import build_charts_export_html
 from analysis.exports.common import df_to_csv_bytes
 from analysis.exports.pivot import nested_pivot_to_excel_bytes
@@ -956,17 +961,20 @@ def main() -> None:
                         value_col = val[0]
                         chart_type = st.radio(
                             "图表类型",
-                            ["统一坐标", "箱线图"],
+                            ["统一坐标", "差值统一坐标", "箱线图"],
                             horizontal=True,
                             key="chart_type_mode",
                         )
 
                         use_uniform_chart = chart_type == "统一坐标"
+                        use_uniform_min_max_chart = chart_type == "差值统一坐标"
                         use_boxplot_chart = chart_type == "箱线图"
                         uniform_x_range = None
                         uniform_y_max = None
+                        uniform_min_max_x_range = None
+                        uniform_min_max_y_max = None
                         boxplot_y_range = None
-                        if use_uniform_chart:
+                        if use_uniform_chart or use_uniform_min_max_chart:
                             st.markdown(
                                 """
                                 <style>
@@ -991,13 +999,23 @@ def main() -> None:
                             if uniform_y_max <= 0:
                                 uniform_x_range = None
                                 uniform_y_max = None
+                        if use_uniform_min_max_chart:
+                            (
+                                uniform_min_max_x_range,
+                                uniform_min_max_y_max,
+                            ) = compute_uniform_min_max_axes(
+                                final_df, row_key_cols, col_key_cols, value_col
+                            )
+                            if uniform_min_max_y_max <= 0:
+                                uniform_min_max_x_range = None
+                                uniform_min_max_y_max = None
                         if use_boxplot_chart:
                             boxplot_y_range = compute_boxplot_range(
                                 final_df, value_col
                             )
 
                         control_group = None
-                        if use_uniform_chart:
+                        if use_uniform_chart or use_uniform_min_max_chart:
                             control_group = resolve_uniform_control_group(
                                 col_key_cols,
                                 col_keys,
@@ -1028,7 +1046,7 @@ def main() -> None:
                         )
 
                     control_stats_by_row = {}
-                    if use_uniform_chart and control_group:
+                    if (use_uniform_chart or use_uniform_min_max_chart) and control_group:
                         for rk in row_keys:
                             ctrl_df = final_df
                             for col_name, v in rk.items():
@@ -1167,17 +1185,34 @@ def main() -> None:
                                 )
                                 if stats:
                                     control_mean, control_median = stats
-                            fig = build_uniform_spaghetti_fig(
-                                df=cell,
-                                subj_col=subj_col,
-                                value_col=value_col,
-                                title=internal_title,
-                                x_range=uniform_x_range,
-                                y_max_count=uniform_y_max,
-                                control_mean=control_mean,
-                                control_median=control_median,
-                                marker_color=chart_color,
-                            )
+                            if use_uniform_min_max_chart:
+                                fig = build_uniform_min_max_spaghetti_fig(
+                                    df=cell,
+                                    subj_col=subj_col,
+                                    value_col=value_col,
+                                    title=internal_title,
+                                    x_range=uniform_min_max_x_range,
+                                    y_max_count=uniform_min_max_y_max,
+                                    control_mean=control_mean,
+                                    control_median=control_median,
+                                    marker_color=chart_color,
+                                )
+                                render_chart = render_uniform_min_max_spaghetti_fig
+                                chart_type_key = "uniform_min_max"
+                            else:
+                                fig = build_uniform_spaghetti_fig(
+                                    df=cell,
+                                    subj_col=subj_col,
+                                    value_col=value_col,
+                                    title=internal_title,
+                                    x_range=uniform_x_range,
+                                    y_max_count=uniform_y_max,
+                                    control_mean=control_mean,
+                                    control_median=control_median,
+                                    marker_color=chart_color,
+                                )
+                                render_chart = render_uniform_spaghetti_fig
+                                chart_type_key = "uniform"
                             if fig is None:
                                 return
 
@@ -1204,9 +1239,7 @@ def main() -> None:
                             if isinstance(meta, dict):
                                 legend_items = meta.get("legend_items", [])
 
-                            render_uniform_spaghetti_fig(
-                                fig, key=f"c_{key_suffix}"
-                            )
+                            render_chart(fig, key=f"c_{key_suffix}")
                             if legend_items:
                                 legend_lines = []
                                 for item in legend_items:
@@ -1249,7 +1282,7 @@ def main() -> None:
                                     "title_html": title_html,
                                     "fig": fig_for_export,
                                     "legend_items": legend_items,
-                                    "chart_type": "uniform",
+                                    "chart_type": chart_type_key,
                                 }
                             )
                             count += 1
