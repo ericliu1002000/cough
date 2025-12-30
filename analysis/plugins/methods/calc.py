@@ -76,10 +76,11 @@ def calc_log_ratio(df_subset: pd.DataFrame) -> pd.Series:
 
     num = pd.to_numeric(df_subset.iloc[:, 0], errors="coerce")
     denom = pd.to_numeric(df_subset.iloc[:, 1], errors="coerce")
-    valid = (num > 0) & (denom > 0)
     result = pd.Series(np.nan, index=df_subset.index, dtype="float64")
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        result[valid] = np.log(num[valid]) - np.log(denom[valid])
+        ratio = num / denom
+    valid = ratio > 0
+    result[valid] = np.log(ratio[valid])
 
     return result

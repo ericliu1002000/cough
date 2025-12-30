@@ -114,6 +114,8 @@ def agg_geo_mean(series: pd.Series) -> float:
     return np.exp(np.log(s).mean())
 
 
+
+
 @register_agg_method("GSD - 几何标准差")
 def agg_gsd(series: pd.Series) -> float:
     """Return geometric standard deviation using log scale."""
@@ -181,6 +183,9 @@ def agg_fmt_mean_se(series: pd.Series) -> str:
     mean_val = s.mean()
     se = s.std(ddof=1) / np.sqrt(len(s))
     return f"{mean_val:.3f}({se:.3f})"
+
+
+
 
 
 @register_agg_method(" Min, Max - 范围")

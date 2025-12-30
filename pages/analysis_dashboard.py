@@ -2,6 +2,7 @@
 
 import copy
 import html
+import math
 from typing import Any
 
 import pandas as pd
@@ -25,6 +26,11 @@ from analysis.plugins.charts.uniform_min_max import (
     build_uniform_spaghetti_fig as build_uniform_min_max_spaghetti_fig,
     compute_uniform_axes as compute_uniform_min_max_axes,
     render_uniform_spaghetti_fig as render_uniform_min_max_spaghetti_fig,
+)
+from analysis.plugins.charts.uniform_log import (
+    build_uniform_spaghetti_fig as build_uniform_log_spaghetti_fig,
+    compute_uniform_axes as compute_uniform_log_axes,
+    render_uniform_spaghetti_fig as render_uniform_log_spaghetti_fig,
 )
 from analysis.exports.charts import build_charts_export_html
 from analysis.exports.common import df_to_csv_bytes
@@ -551,7 +557,7 @@ def main() -> None:
             if not default_aggs:
                 default_aggs = ["Mean - 平均值"]
             aggs = st.multiselect(
-                "聚合函数（可多选）",
+                "统计量（可多选）",
                 agg_options,
                 default=default_aggs,
                 key="pivot_aggs",
@@ -961,20 +967,27 @@ def main() -> None:
                         value_col = val[0]
                         chart_type = st.radio(
                             "图表类型",
-                            ["统一坐标", "差值统一坐标", "箱线图"],
+                            ["统一坐标", "差值统一坐标", "对数坐标", "箱线图"],
                             horizontal=True,
                             key="chart_type_mode",
                         )
 
                         use_uniform_chart = chart_type == "统一坐标"
                         use_uniform_min_max_chart = chart_type == "差值统一坐标"
+                        use_uniform_log_chart = chart_type == "对数坐标"
                         use_boxplot_chart = chart_type == "箱线图"
                         uniform_x_range = None
                         uniform_y_max = None
                         uniform_min_max_x_range = None
                         uniform_min_max_y_max = None
+                        uniform_log_x_range = None
+                        uniform_log_y_max = None
                         boxplot_y_range = None
-                        if use_uniform_chart or use_uniform_min_max_chart:
+                        if (
+                            use_uniform_chart
+                            or use_uniform_min_max_chart
+                            or use_uniform_log_chart
+                        ):
                             st.markdown(
                                 """
                                 <style>
@@ -1009,13 +1022,51 @@ def main() -> None:
                             if uniform_min_max_y_max <= 0:
                                 uniform_min_max_x_range = None
                                 uniform_min_max_y_max = None
+                        if use_uniform_log_chart:
+                            (
+                                uniform_log_x_range,
+                                uniform_log_y_max,
+                            ) = compute_uniform_log_axes(
+                                final_df, row_key_cols, col_key_cols, value_col
+                            )
+                            if uniform_log_y_max <= 0:
+                                uniform_log_x_range = None
+                                uniform_log_y_max = None
+                            raw_vals = final_df[value_col]
+                            numeric_vals = pd.to_numeric(
+                                raw_vals, errors="coerce"
+                            )
+                            invalid_mask = numeric_vals.isna() | (numeric_vals <= 0)
+                            invalid_vals = raw_vals[invalid_mask]
+                            if not invalid_vals.empty:
+                                invalid_count = int(invalid_mask.sum())
+                                unique_vals = [
+                                    str(v)
+                                    for v in invalid_vals.dropna().unique().tolist()
+                                ]
+                                max_display = 8
+                                display_vals = unique_vals[:max_display]
+                                more = len(unique_vals) - len(display_vals)
+                                display_text = ", ".join(display_vals)
+                                if not display_text:
+                                    display_text = "空值"
+                                if more > 0:
+                                    display_text += f" 等 {more} 个不同值"
+                                st.warning(
+                                    f"对数坐标已过滤 {invalid_count} 条非正值/非数值："
+                                    f"{display_text}"
+                                )
                         if use_boxplot_chart:
                             boxplot_y_range = compute_boxplot_range(
                                 final_df, value_col
                             )
 
                         control_group = None
-                        if use_uniform_chart or use_uniform_min_max_chart:
+                        if (
+                            use_uniform_chart
+                            or use_uniform_min_max_chart
+                            or use_uniform_log_chart
+                        ):
                             control_group = resolve_uniform_control_group(
                                 col_key_cols,
                                 col_keys,
@@ -1046,7 +1097,11 @@ def main() -> None:
                         )
 
                     control_stats_by_row = {}
-                    if (use_uniform_chart or use_uniform_min_max_chart) and control_group:
+                    if (
+                        use_uniform_chart
+                        or use_uniform_min_max_chart
+                        or use_uniform_log_chart
+                    ) and control_group:
                         for rk in row_keys:
                             ctrl_df = final_df
                             for col_name, v in rk.items():
@@ -1063,10 +1118,20 @@ def main() -> None:
                             ).dropna()
                             if vals.empty:
                                 continue
-                            control_stats_by_row[build_row_key_sig(rk)] = (
-                                float(vals.mean()),
-                                float(vals.median()),
-                            )
+                            if use_uniform_log_chart:
+                                vals = vals[vals > 0]
+                                if vals.empty:
+                                    continue
+                                log_vals = vals.apply(math.log)
+                                control_stats_by_row[build_row_key_sig(rk)] = (
+                                    float(math.exp(log_vals.mean())),
+                                    float(math.exp(log_vals.median())),
+                                )
+                            else:
+                                control_stats_by_row[build_row_key_sig(rk)] = (
+                                    float(vals.mean()),
+                                    float(vals.median()),
+                                )
 
                     if use_boxplot_chart:
                         col_group_labels = []
@@ -1185,7 +1250,21 @@ def main() -> None:
                                 )
                                 if stats:
                                     control_mean, control_median = stats
-                            if use_uniform_min_max_chart:
+                            if use_uniform_log_chart:
+                                fig = build_uniform_log_spaghetti_fig(
+                                    df=cell,
+                                    subj_col=subj_col,
+                                    value_col=value_col,
+                                    title=internal_title,
+                                    x_range=uniform_log_x_range,
+                                    y_max_count=uniform_log_y_max,
+                                    control_mean=control_mean,
+                                    control_median=control_median,
+                                    marker_color=chart_color,
+                                )
+                                render_chart = render_uniform_log_spaghetti_fig
+                                chart_type_key = "uniform_log"
+                            elif use_uniform_min_max_chart:
                                 fig = build_uniform_min_max_spaghetti_fig(
                                     df=cell,
                                     subj_col=subj_col,

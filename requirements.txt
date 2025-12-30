@@ -9,3 +9,5 @@ plotly==6.4.0
 scipy
 pytest
 watchdog
+
+#最小二乘
