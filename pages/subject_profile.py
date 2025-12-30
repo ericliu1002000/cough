@@ -1,6 +1,6 @@
 """Streamlit subject profile page."""
 
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -9,7 +9,10 @@ from analysis.auth.session import require_login
 from analysis.settings.config import TABLE_DESCRIBE_COLUMN
 from analysis.settings.logging import log_access
 from analysis.exports.subject_profile import to_excel_sections_bytes
-from db.services.subject_profile import query_subject_tables
+from db.services.subject_profile import (
+    query_subject_tables,
+    query_table_value_stats,
+)
 
 
 st.set_page_config(page_title="受试者档案", layout="wide")
@@ -79,6 +82,58 @@ def _resolve_table_descriptor(
     return None
 
 
+def _format_empty_value(value: object) -> str:
+    if value is None:
+        return "空"
+    try:
+        if pd.isna(value):
+            return "空"
+    except Exception:
+        pass
+    if isinstance(value, str) and not value.strip():
+        return "空"
+    return str(value)
+
+
+def _get_dataframe_selection(event: object, key: str) -> tuple[int | None, str | None]:
+    selection = getattr(event, "selection", None)
+    if selection is None:
+        state = st.session_state.get(key)
+        if isinstance(state, dict):
+            selection = state.get("selection")
+        else:
+            selection = getattr(state, "selection", None)
+
+    if selection is None:
+        return None, None
+
+    if hasattr(selection, "rows"):
+        rows = selection.rows
+        cols = selection.columns
+    else:
+        rows = selection.get("rows", [])
+        cols = selection.get("columns", [])
+
+    row_idx = rows[0] if rows else None
+    col_name = cols[0] if cols else None
+    return row_idx, col_name
+
+
+def _get_value_stats(
+    table_name: str, col_name: str
+) -> tuple[list[dict[str, object]], str | None]:
+    cache = st.session_state.setdefault("subject_profile_value_stats", {})
+    cache_key = f"{table_name}::{col_name}"
+    if cache_key in cache:
+        entry = cache[cache_key]
+        return entry.get("stats", []), entry.get("error")
+
+    with st.spinner("正在统计列分布..."):
+        stats, error = query_table_value_stats(table_name, col_name)
+    cache[cache_key] = {"stats": stats, "error": error}
+    return stats, error
+
+
 def main() -> None:
     """Render the subject profile page."""
     require_login()
@@ -124,9 +179,6 @@ def main() -> None:
 
     total_rows = sum(len(df) for df in subject_tables.values())
     total_columns = sum(len(df.columns) for df in subject_tables.values())
-    table_order_map = {
-        name: idx for idx, name in enumerate(subject_tables.keys())
-    }
 
     c1, c2, c3 = st.columns(3)
     c1.metric("表数量", f"{len(subject_tables)}")
@@ -172,18 +224,70 @@ def main() -> None:
         else:
             st.subheader(f"表：`{table_name}`  （行数：{len(df)}）")
 
-        if len(df) <= 10:
-            st.dataframe(df, width="stretch", hide_index=True)
-        else:
+        show_full = False
+        display_df = df
+        if len(df) > 10:
             st.caption(f"默认展示前 10 行，共 {len(df)} 行。")
             show_full = st.checkbox(
                 f"显示 `{table_name}` 的全部 {len(df)} 行",
                 key=f"show_full_{table_name}",
             )
-            if show_full:
-                st.dataframe(df, width="stretch", hide_index=True)
+            if not show_full:
+                display_df = df.head(10)
+
+        data_key = f"table_{table_name}_{'full' if show_full else 'head'}"
+        event = st.dataframe(
+            display_df,
+            width="stretch",
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-column",
+            key=data_key,
+        )
+
+        row_idx, col_name = _get_dataframe_selection(event, data_key)
+        if isinstance(col_name, int) and col_name < len(display_df.columns):
+            col_name = display_df.columns[col_name]
+        if col_name and col_name in display_df.columns:
+            st.caption(
+                f"当前选择：`{table_name}` / `{col_name}`"
+            )
+
+            stats, error = _get_value_stats(table_name, col_name)
+            if error:
+                st.warning(f"{error}")
+            elif not stats:
+                st.info("该列暂无可统计的数据。")
             else:
-                st.dataframe(df.head(10), width="stretch", hide_index=True)
+                show_all_key = f"value_stats_show_all::{table_name}::{col_name}"
+                show_all = st.session_state.get(show_all_key, False)
+                display_stats = stats
+                if len(stats) > 50 and not show_all:
+                    display_stats = stats[:50]
+                    st.caption("仅展示前 50 个值。")
+                    if st.button(
+                        "加载更多",
+                        key=f"load_more_{table_name}_{col_name}",
+                    ):
+                        show_all = True
+                        st.session_state[show_all_key] = True
+                        display_stats = stats
+
+                options = []
+                for item in display_stats:
+                    val_label = _format_empty_value(item.get("value"))
+                    record_count = int(item.get("record_count") or 0)
+                    subject_count = int(item.get("subject_count") or 0)
+                    options.append(
+                        f"{val_label}（{record_count} records，{subject_count} patients）"
+                    )
+
+                st.selectbox(
+                    "value_list",
+                    options=options,
+                    key=f"value_list_{table_name}_{col_name}_{int(show_all)}",
+                )
+        
 
 
 if __name__ == "__main__":

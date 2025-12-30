@@ -1,6 +1,6 @@
 """Subject profile data access helpers (DB layer)."""
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from sqlalchemy import text
@@ -33,7 +33,7 @@ def query_subject_tables(
     Load all rows for a subject across tables that include an ID column.
 
     Returns:
-        (results, warnings)
+        (results, warnings, skipped)
     """
     results: Dict[str, pd.DataFrame] = {}
     warnings: List[str] = []
@@ -100,3 +100,54 @@ def query_subject_tables(
         results[table_name] = df
 
     return results, warnings, skipped
+
+
+def query_table_value_stats(
+    table_name: str, value_col: str
+) -> Tuple[List[Dict[str, object]], Optional[str]]:
+    """
+    Return value distribution stats for a column across the whole table.
+
+    Returns:
+        (records, error_message)
+    """
+    if not table_name or not value_col:
+        return [], "表名或列名为空"
+
+    meta = get_table_columns_map(include_hidden=False)
+    columns = meta.get(table_name, [])
+    if not columns:
+        return [], "未找到表结构元数据"
+
+    if value_col not in columns:
+        return [], "列不在元数据中"
+
+    id_col = _get_id_column(table_name, meta)
+    if not id_col:
+        return [], "缺少 ID 列"
+
+    sql = text(
+        "SELECT "
+        f"{_quote_ident(value_col)} AS value, "
+        "COUNT(*) AS record_count, "
+        f"COUNT(DISTINCT {_quote_ident(id_col)}) AS subject_count "
+        f"FROM {_quote_ident(table_name)} "
+        f"GROUP BY {_quote_ident(value_col)} "
+        "ORDER BY record_count DESC"
+    )
+    engine = get_business_engine()
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(sql, conn)
+    except Exception as exc:
+        log_exception(
+            "subject_profile.query_table_value_stats failed",
+            {"table": table_name, "column": value_col},
+        )
+        return [], f"查询失败: {exc}"
+
+    if df.empty:
+        return [], None
+
+    records = df.to_dict(orient="records")
+    return records, None
