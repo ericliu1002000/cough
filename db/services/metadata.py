@@ -84,7 +84,7 @@ def sync_business_metadata(project_name: Optional[str] = None) -> Dict[str, int]
             raise RuntimeError(
                 f"读取列信息失败: {object_name}，原因: {exc}"
             ) from exc
-        for column in columns:
+        for idx, column in enumerate(columns, start=1):
             col_name = column.get("name")
             if not col_name:
                 continue
@@ -95,6 +95,7 @@ def sync_business_metadata(project_name: Optional[str] = None) -> Dict[str, int]
                     "object_name": object_name,
                     "column_name": col_name,
                     "data_type": str(data_type) if data_type is not None else None,
+                    "source_order_index": idx,
                     "order_index": DEFAULT_ORDER_INDEX,
                 }
             )
@@ -119,10 +120,13 @@ def sync_business_metadata(project_name: Optional[str] = None) -> Dict[str, int]
     if column_rows:
         insert_sql = text(
             "INSERT INTO business_columns "
-            "(project_name, object_name, column_name, data_type, order_index, is_visible, last_seen_at) "
-            "VALUES (:project_name, :object_name, :column_name, :data_type, :order_index, 1, NOW()) "
+            "(project_name, object_name, column_name, data_type, source_order_index, "
+            "order_index, is_visible, last_seen_at) "
+            "VALUES (:project_name, :object_name, :column_name, :data_type, "
+            ":source_order_index, :order_index, 1, NOW()) "
             "ON DUPLICATE KEY UPDATE "
             "data_type = VALUES(data_type), "
+            "source_order_index = VALUES(source_order_index), "
             "updated_at = NOW(), "
             "last_seen_at = NOW()"
         )
@@ -155,7 +159,7 @@ def fetch_business_objects(
         sql += "AND is_visible = 1 "
     sql += (
         "ORDER BY "
-        f"COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, object_name"
+        f"COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC"
     )
 
     engine = get_system_engine()
@@ -172,8 +176,8 @@ def fetch_business_columns(
 ) -> List[Dict[str, object]]:
     """读取指定对象的列配置列表。"""
     sql = (
-        "SELECT id, column_name, data_type, display_name, order_index, "
-        "is_visible, last_seen_at "
+        "SELECT id, column_name, data_type, source_order_index, display_name, "
+        "order_index, is_visible, last_seen_at "
         "FROM business_columns "
         "WHERE project_name = :project AND object_name = :object "
     )
@@ -181,13 +185,59 @@ def fetch_business_columns(
         sql += "AND is_visible = 1 "
     sql += (
         "ORDER BY "
-        f"COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, column_name"
+        f"COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, "
+        "COALESCE(source_order_index, 999999) ASC"
     )
 
     engine = get_system_engine()
     with engine.connect() as conn:
         rows = conn.execute(
             text(sql), {"project": project_name, "object": object_name}
+        ).mappings().all()
+    engine.dispose()
+    return [dict(row) for row in rows]
+
+
+def fetch_column_name_counts(
+    project_name: Optional[str] = None,
+) -> List[Dict[str, object]]:
+    """读取列名及出现次数，用于快速搜索。"""
+    config = get_business_db_config()
+    project = project_name or config["code"]
+
+    sql = (
+        "SELECT column_name, COUNT(*) AS cnt "
+        "FROM business_columns "
+        "WHERE project_name = :project "
+        "GROUP BY column_name "
+        # "ORDER BY column_name"
+    )
+    engine = get_system_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"project": project}).mappings().all()
+    engine.dispose()
+    return [dict(row) for row in rows]
+
+
+def fetch_columns_by_name(
+    project_name: str,
+    column_name: str,
+) -> List[Dict[str, object]]:
+    """按列名读取所有表内的列配置。"""
+    sql = (
+        "SELECT id, object_name, column_name, display_name, order_index, "
+        "source_order_index, is_visible, last_seen_at "
+        "FROM business_columns "
+        "WHERE project_name = :project AND column_name = :column "
+        "ORDER BY "
+        f"COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, "
+        "COALESCE(source_order_index, 999999) ASC"
+    )
+
+    engine = get_system_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(sql), {"project": project_name, "column": column_name}
         ).mappings().all()
     engine.dispose()
     return [dict(row) for row in rows]
@@ -317,18 +367,20 @@ def get_table_columns_map(
         "WHERE project_name = :project "
     )
     columns_sql = (
-        "SELECT object_name, column_name "
+        "SELECT object_name, column_name, source_order_index "
         "FROM business_columns "
         "WHERE project_name = :project "
     )
     if not include_hidden:
+        print('include_hidden is False')
         objects_sql += "AND is_visible = 1 "
         columns_sql += "AND is_visible = 1 "
     objects_sql += (
         f"ORDER BY COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, object_name"
     )
     columns_sql += (
-        f"ORDER BY COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, column_name"
+        f"ORDER BY COALESCE(order_index, {DEFAULT_ORDER_INDEX}) DESC, "
+        "COALESCE(source_order_index, 999999) ASC"
     )
 
     engine = get_system_engine()

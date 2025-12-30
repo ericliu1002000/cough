@@ -64,6 +64,7 @@ SYSTEM_TABLES: Dict[str, Dict[str, object]] = {
             ("object_name", "VARCHAR(255) NOT NULL"),
             ("column_name", "VARCHAR(255) NOT NULL"),
             ("data_type", "VARCHAR(64) NULL"),
+            ("source_order_index", "INT NULL"),
             ("display_name", "VARCHAR(255) NULL"),
             ("order_index", "INT NOT NULL DEFAULT 100"),
             ("is_visible", "TINYINT(1) NOT NULL DEFAULT 1"),

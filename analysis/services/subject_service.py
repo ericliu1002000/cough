@@ -29,16 +29,23 @@ def query_subject_tables(subject_id: Any) -> Tuple[Dict[str, pd.DataFrame], List
     if subject_id is None or subject_id == "":
         return results, warnings
 
-    meta = load_table_metadata(include_hidden=True)
+    meta = load_table_metadata(include_hidden=False)
     engine = get_business_engine()
 
     for table_name, _cols in meta.items():
         id_col = get_id_column(table_name, meta)
         if not id_col:
             continue
+        columns = meta.get(table_name, [])
+        if not columns:
+            continue
+        if id_col not in columns:
+            columns = [id_col] + columns
 
+        select_cols = ", ".join(_quote_ident(col) for col in columns)
         sql = text(
-            f"SELECT * FROM {_quote_ident(table_name)} WHERE {_quote_ident(id_col)} = :sid"
+            f"SELECT {select_cols} FROM {_quote_ident(table_name)} "
+            f"WHERE {_quote_ident(id_col)} = :sid"
         )
         try:
             with engine.connect() as conn:

@@ -12,6 +12,7 @@ st.markdown(
             "Use the sidebar to switch pages:",
             "- Upload: import Excel/CSV into business DB.",
             "- Metadata: sync and configure tables/columns.",
+            "- Metadata Column: find a column and edit weight/visibility.",
         ]
     )
 )

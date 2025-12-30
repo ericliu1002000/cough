@@ -61,6 +61,7 @@ def _prepare_editor_df(
     data: list[dict[str, object]],
     order_col: str,
     name_col: str,
+    source_col: str | None = None,
 ) -> pd.DataFrame:
     if cache_key in st.session_state:
         cached = st.session_state[cache_key]
@@ -73,11 +74,19 @@ def _prepare_editor_df(
 
     df[order_col] = _to_int_series(df[order_col])
     df["is_visible"] = _to_bool_series(df["is_visible"])
-    df = df.sort_values(
-        by=[order_col, name_col],
-        ascending=[False, True],
-        ignore_index=True,
-    )
+    if source_col and source_col in df.columns:
+        df[source_col] = pd.to_numeric(df[source_col], errors="coerce")
+        df = df.sort_values(
+            by=[order_col, source_col, name_col],
+            ascending=[False, True, True],
+            ignore_index=True,
+        )
+    else:
+        df = df.sort_values(
+            by=[order_col, name_col],
+            ascending=[False, True],
+            ignore_index=True,
+        )
     return df
 
 
@@ -100,6 +109,9 @@ project = config["code"]
 system_db = get_system_db_name()
 
 st.markdown(f"用于配置业务表/视图与列的显示名、排序与可见性。系统库: `{system_db}` | 业务库: `{config['database']}`。CURRENT_BUSINESS_CODE: `{project}`")
+
+if st.session_state.pop("metadata_dirty", False):
+    _clear_columns_cache()
 
 rule_col, sync_col = st.columns([4, 1], vertical_alignment="center")
 with rule_col:
@@ -248,7 +260,7 @@ with right_col:
         editor_key = f"columns_editor_{project}_{selected_object}"
         cache_key = f"{editor_key}_data"
         columns_df = _prepare_editor_df(
-            cache_key, columns, "order_index", "column_name"
+            cache_key, columns, "order_index", "column_name", "source_order_index"
         )
 
         display_columns = columns_df.copy()
