@@ -1,9 +1,10 @@
 """Shared constants used across the app."""
 
 SUBJECT_ID_ALIASES = [
-    "SUBJID",
+    
     "USUBJID",
     "SUBJECTID",
+    "SUBJID",
     "patient_id",
 ]
 

@@ -45,6 +45,9 @@ MYSQL_DATABASE = os.getenv("MYSQL_DATABASE")
 # - 在 .env 中设置 ENGINE_ECHO=true 即可打开
 ENGINE_ECHO = os.getenv("ENGINE_ECHO", "false").lower() == "true"
 
+# 表名后展示的描述列（按顺序匹配）
+TABLE_DESCRIBE_COLUMN = os.getenv("TABLE_DESCRIBE_COLUMN", "form")
+
 
 def _get_server_url() -> URL:
     """

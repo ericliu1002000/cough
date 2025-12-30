@@ -6,5 +6,5 @@
 文件:
 - __init__.py: 包标识。
 - analysis_service.py: 分析流程与统计计算。
-- subject_service.py: 受试者档案查询。
+ - subject_profile.py (db/services): 受试者档案查询。
 - readme.md: 本说明。
