@@ -50,6 +50,31 @@ def agg_mean_atomic(series: pd.Series) -> float:
     return pd.to_numeric(series, errors="coerce").mean()
 
 
+def compute_trimmed_mean(series: pd.Series, keep_ratio: float) -> float:
+    """Return trimmed mean keeping the middle proportion of data."""
+    if keep_ratio is None:
+        return np.nan
+    try:
+        keep_ratio = float(keep_ratio)
+    except (TypeError, ValueError):
+        return np.nan
+    if keep_ratio <= 0:
+        return np.nan
+    keep_ratio = min(keep_ratio, 1.0)
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return np.nan
+    values = np.sort(s.to_numpy(dtype=float))
+    n = len(values)
+    trim_ratio = max((1.0 - keep_ratio) / 2.0, 0.0)
+    trim_n = int(np.floor(n * trim_ratio))
+    trim_n = min(trim_n, (n - 1) // 2)
+    trimmed = values[trim_n : n - trim_n]
+    if trimmed.size == 0:
+        return np.nan
+    return float(trimmed.mean())
+
+
 @register_agg_method("SD - 标准差")
 def agg_sd_atomic(series: pd.Series) -> float:
     """Return sample standard deviation using ddof=1."""

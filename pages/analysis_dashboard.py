@@ -10,6 +10,7 @@ import streamlit as st
 
 from analysis.auth.session import require_login
 from analysis.plugins.methods import CALC_METHODS, AGG_METHODS
+from analysis.plugins.methods.agg import compute_trimmed_mean
 from analysis.plugins.charts.boxplot import (
     build_boxplot_matrix_fig,
     compute_boxplot_range,
@@ -779,28 +780,65 @@ def main() -> None:
                     st.info("折线图需要至少一个列维度。")
                 else:
                     st.markdown("#### 📈 折线图")
-                    line_items = []
-                    line_export_items = []
                     value_col = val[0]
                     row_cols = idx
                     col_orders = st.session_state.get(
                         "pivot_col_order", {}
                     )
                     row_orders = row_orders_map
+                    mean_y_ranges: dict[str, list[float]] = {}
                     line_aggs = [
                         "Mean - 平均值",
                         "Median - 中位数",
                     ]
                     line_aggs = [a for a in line_aggs if a in AGG_METHODS]
                     error_mode = None
+                    keep_percent = 90
                     if "Mean - 平均值" in line_aggs:
-                        error_mode = st.radio(
-                            "均值误差条",
-                            ["无", "SE", "SD"],
-                            horizontal=True,
-                            key="line_error_mode",
-                            index=0,
+                        control_cols = st.columns([3, 1])
+                        with control_cols[0]:
+                            error_mode = st.radio(
+                                "均值误差条",
+                                ["无", "SE", "SD"],
+                                horizontal=True,
+                                key="line_error_mode",
+                                index=0,
+                            )
+                        with control_cols[1]:
+                            keep_percent = st.number_input(
+                                "Trimmed Mean保留区间(%)",
+                                min_value=0,
+                                max_value=100,
+                                value=int(
+                                    st.session_state.get(
+                                        "line_trim_keep_percent", 90
+                                    )
+                                ),
+                                step=1,
+                                key="line_trim_keep_percent",
+                            )
+                    else:
+                        keep_percent = st.number_input(
+                            "Trimmed Mean保留区间(%)",
+                            min_value=0,
+                            max_value=100,
+                            value=int(
+                                st.session_state.get(
+                                    "line_trim_keep_percent", 90
+                                )
+                            ),
+                            step=1,
+                            key="line_trim_keep_percent",
                         )
+                    trim_pct = max(0.0, (100 - float(keep_percent)) / 2.0)
+                    
+
+                    items_by_col: dict[str, dict[str, dict[str, Any]]] = {
+                        col_field: {} for col_field in col
+                    }
+                    export_by_col: dict[str, dict[str, dict[str, Any]]] = {
+                        col_field: {} for col_field in col
+                    }
                     for agg_name in line_aggs:
                         for col_field in col:
                             is_mean = agg_name == "Mean - 平均值"
@@ -817,26 +855,85 @@ def main() -> None:
                                 col_orders=col_orders,
                                 error_mode=resolved_error,
                                 show_counts=is_mean,
+                                y_range_pad_ratio=0.1,
                             )
                             if fig is None:
                                 continue
+                            if is_mean:
+                                mean_range = fig.layout.yaxis.range
+                                if mean_range:
+                                    mean_y_ranges[col_field] = list(
+                                        mean_range
+                                    )
                             title = f"{col_field} | {agg_name}"
-                            line_items.append({"title": title, "fig": fig})
-                            line_export_items.append(
-                                {
-                                    "title": title,
-                                    "title_html": html.escape(title),
-                                    "fig": copy.deepcopy(fig),
-                                    "legend_items": [],
-                                    "chart_type": "line",
-                                }
-                            )
-                    if not line_items:
+                            items_by_col[col_field][agg_name] = {
+                                "title": title,
+                                "fig": fig,
+                            }
+                            export_by_col[col_field][agg_name] = {
+                                "title": title,
+                                "title_html": html.escape(title),
+                                "fig": copy.deepcopy(fig),
+                                "legend_items": [],
+                                "chart_type": "line",
+                            }
+                    keep_ratio = max(float(keep_percent) / 100.0, 0.0)
+                    trimmed_agg_name = f"trimmed mean ({keep_percent}%)"
+                    trimmed_func = lambda s, keep_ratio=keep_ratio: (
+                        compute_trimmed_mean(s, keep_ratio)
+                    )
+                    for col_field in col:
+                        fig = build_pivot_line_fig(
+                            df=final_df,
+                            value_col=value_col,
+                            row_key_cols=row_cols,
+                            col_field=col_field,
+                            agg_name=trimmed_agg_name,
+                            row_orders=row_orders,
+                            col_orders=col_orders,
+                            agg_func=trimmed_func,
+                            y_range_pad_ratio=0.1,
+                        )
+                        if fig is None:
+                            continue
+                        mean_range = mean_y_ranges.get(col_field)
+                        if mean_range:
+                            fig.update_yaxes(range=list(mean_range))
+                        title = f"{col_field} | trimmed mean ({keep_percent}%)"
+                        items_by_col[col_field]["__trimmed__"] = {
+                            "title": title,
+                            "fig": fig,
+                        }
+                        export_by_col[col_field]["__trimmed__"] = {
+                            "title": title,
+                            "title_html": html.escape(title),
+                            "fig": copy.deepcopy(fig),
+                            "legend_items": [],
+                            "chart_type": "line",
+                        }
+                    ordered_keys = [
+                        "Mean - 平均值",
+                        "__trimmed__",
+                        "Median - 中位数",
+                    ]
+                    ordered_items = []
+                    ordered_export_items = []
+                    for col_field in col:
+                        for key in ordered_keys:
+                            item = items_by_col.get(col_field, {}).get(key)
+                            if item:
+                                ordered_items.append(item)
+                            export_item = export_by_col.get(
+                                col_field, {}
+                            ).get(key)
+                            if export_item:
+                                ordered_export_items.append(export_item)
+                    if not ordered_items:
                         st.info("暂无可绘制的折线图数据。")
                     else:
                         max_cols = 3
-                        for start in range(0, len(line_items), max_cols):
-                            row_items = line_items[
+                        for start in range(0, len(ordered_items), max_cols):
+                            row_items = ordered_items[
                                 start : start + max_cols
                             ]
                             cols = st.columns(max_cols)
@@ -845,27 +942,33 @@ def main() -> None:
                                     continue
                                 item = row_items[col_idx]
                                 with cols[col_idx]:
-                                    st.markdown(f"**{item['title']}**")
+                                    st.markdown(
+                                        f"**{item['title']}**"
+                                    )
                                     render_line_fig(
                                         item["fig"],
-                                        key=f"pivot_line_{start + col_idx}",
+                                        key=(
+                                            "pivot_line_"
+                                            f"{start + col_idx}"
+                                        ),
                                     )
 
-                        if line_export_items:
-                            if st.button(
-                                "📥 下载折线图 (HTML)",
-                                key="btn_export_line_charts",
-                            ):
-                                full_html = build_charts_export_html(
-                                    line_export_items
-                                )
-                                st.download_button(
-                                    "⬇️ 保存折线图 HTML",
-                                    data=full_html.encode("utf-8"),
-                                    file_name="pivot_line_charts.html",
-                                    mime="text/html",
-                                    key="btn_export_line_charts_download",
-                                )
+                    line_export_items = ordered_export_items
+                    if line_export_items:
+                        if st.button(
+                            "📥 下载折线图 (HTML)",
+                            key="btn_export_line_charts",
+                        ):
+                            full_html = build_charts_export_html(
+                                line_export_items
+                            )
+                            st.download_button(
+                                "⬇️ 保存折线图 HTML",
+                                data=full_html.encode("utf-8"),
+                                file_name="pivot_line_charts.html",
+                                mime="text/html",
+                                key="btn_export_line_charts_download",
+                            )
             except Exception as e:
                 st.error(f"透视失败: {e}")
 

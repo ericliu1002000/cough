@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -119,6 +119,8 @@ def build_pivot_line_fig(
     col_orders: Optional[Dict[str, List[str]]] = None,
     error_mode: Optional[str] = None,
     show_counts: bool = False,
+    agg_func: Optional[Callable[[pd.Series], float]] = None,
+    y_range_pad_ratio: float = 0.0,
 ) -> Optional["go.Figure"]:
     """Build a line chart figure from pivoted data."""
     if df.empty or value_col not in df.columns or col_field not in df.columns:
@@ -154,7 +156,9 @@ def build_pivot_line_fig(
         if error_mode not in {"SD", "SE"}:
             error_mode = None
 
-    agg_func = AGG_METHODS.get(agg_name, "mean")
+    resolved_agg_func = (
+        agg_func if agg_func is not None else AGG_METHODS.get(agg_name, "mean")
+    )
     group_cols = list(row_key_cols) + [col_field]
     grouped = work_df.groupby(group_cols, dropna=False, sort=False)
     agg_map: Dict[Tuple[Tuple[str, ...], str], Optional[float]] = {}
@@ -182,10 +186,10 @@ def build_pivot_line_fig(
                     err_val = sd_val
             error_map[(row_tuple, col_val)] = _coerce_number(err_val)
         try:
-            if callable(agg_func):
-                agg_val = agg_func(series)
+            if callable(resolved_agg_func):
+                agg_val = resolved_agg_func(series)
             else:
-                agg_val = series.agg(agg_func)
+                agg_val = series.agg(resolved_agg_func)
         except Exception:
             agg_val = None
         agg_map[(row_tuple, col_val)] = _coerce_number(agg_val)
@@ -316,8 +320,14 @@ def build_pivot_line_fig(
         gridcolor="#e6e6e6",
     )
     if y_min is not None and y_max is not None:
+        pad = 0.0
         if y_min == y_max:
-            pad = 1.0 if y_min == 0 else abs(y_min) * 0.05
+            pad = abs(y_min) * y_range_pad_ratio
+            if pad == 0:
+                pad = 1.0
+        elif y_range_pad_ratio:
+            pad = (y_max - y_min) * y_range_pad_ratio
+        if pad:
             y_min -= pad
             y_max += pad
         yaxis_kwargs["range"] = [y_min, y_max]
