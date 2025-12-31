@@ -2,6 +2,7 @@
 
 from urllib.parse import urlencode
 
+import streamlit as st
 from streamlit import config as st_config
 
 from analysis.auth.session import append_auth_token
@@ -23,3 +24,24 @@ def truncate_text(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def hide_login_sidebar_entry() -> None:
+    """Hide the login page entry in the Streamlit sidebar navigation."""
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] a[href*="_login"],
+        section[data-testid="stSidebar"] a[href*="login"],
+        section[data-testid="stSidebar"] a[aria-label*="Login"],
+        section[data-testid="stSidebar"] button[aria-label*="Login"],
+        section[data-testid="stSidebar"] li:has(a[href*="_login"]),
+        section[data-testid="stSidebar"] li:has(a[href*="login"]),
+        section[data-testid="stSidebar"] li:has(a[aria-label*="Login"]),
+        section[data-testid="stSidebar"] li:has(button[aria-label*="Login"]) {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )

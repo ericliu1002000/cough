@@ -50,10 +50,14 @@ from analysis.services.analysis_service import (
 from analysis.settings.logging import log_access
 from analysis.state.dashboard import reset_dashboard_state
 from analysis.views.pivot_nested import render_pivot_nested
-from analysis.views.components.page_utils import build_page_url
+from analysis.views.components.page_utils import (
+    build_page_url,
+    hide_login_sidebar_entry,
+)
 
 page_title = st.session_state.get("page_title") or "分析仪表盘"
 st.set_page_config(page_title=page_title, layout="wide")
+hide_login_sidebar_entry()
 st.title(f"📊 {page_title}")
 st.markdown(
     """

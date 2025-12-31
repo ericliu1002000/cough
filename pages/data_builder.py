@@ -10,6 +10,7 @@ from analysis.settings.logging import log_access
 from analysis.settings.config import get_business_engine
 from analysis.settings.constants import OPERATORS, SUBJECT_ID_ALIASES
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
+from analysis.views.components.page_utils import hide_login_sidebar_entry
 from setup_catalog.services.analysis_list_setups import (
     delete_setup_config,
     fetch_all_setups,
@@ -30,6 +31,7 @@ MAX_TABLE_NUMBER = int(os.getenv("MAX_TABLE_NUMBER", "5"))
 # ===========================
 
 st.set_page_config(page_title="临床数据拼表器", layout="wide")
+hide_login_sidebar_entry()
 require_login()
 log_access("data_builder")
 st.title("🏥 临床试验数据拼表工具")

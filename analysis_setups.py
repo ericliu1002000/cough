@@ -14,9 +14,14 @@ from setup_catalog.services.analysis_list_setups import (
     save_extraction_config,
 )
 from analysis.settings.logging import log_access
-from analysis.views.components.page_utils import build_page_url, truncate_text
+from analysis.views.components.page_utils import (
+    build_page_url,
+    hide_login_sidebar_entry,
+    truncate_text,
+)
 
 st.set_page_config(page_title="分析配置", layout="wide")
+hide_login_sidebar_entry()
 require_login()
 log_access("analysis_setups")
 

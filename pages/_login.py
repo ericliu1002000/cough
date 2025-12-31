@@ -11,11 +11,13 @@ from analysis.auth.session import (
     touch_session,
 )
 from analysis.settings.logging import log_access, log_event
+from analysis.views.components.page_utils import hide_login_sidebar_entry
 
 
 def main() -> None:
     """Render the login page and handle authentication."""
     st.set_page_config(page_title="登录", layout="centered")
+    hide_login_sidebar_entry()
     st.title("🔐 登录")
     log_access("login", dedupe=True)
 

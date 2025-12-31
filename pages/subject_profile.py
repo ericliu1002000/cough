@@ -9,6 +9,7 @@ from analysis.auth.session import require_login
 from analysis.settings.config import TABLE_DESCRIBE_COLUMN
 from analysis.settings.logging import log_access
 from analysis.exports.subject_profile import to_excel_sections_bytes
+from analysis.views.components.page_utils import hide_login_sidebar_entry
 from db.services.subject_profile import (
     query_subject_tables,
     query_table_value_stats,
@@ -16,6 +17,7 @@ from db.services.subject_profile import (
 
 
 st.set_page_config(page_title="受试者档案", layout="wide")
+hide_login_sidebar_entry()
 st.title("🧬 受试者全表档案")
 
 
