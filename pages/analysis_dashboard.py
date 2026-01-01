@@ -47,6 +47,16 @@ from analysis.services.analysis_service import (
     calculate_anova_table,
     run_analysis,
 )
+from analysis.services.calculation_graph import (
+    build_dependency_rows,
+    build_graphviz_dot,
+    run_calculation_graph,
+)
+from analysis.services.calculation_config import (
+    apply_calculation_config,
+    build_calculation_payload,
+    cascade_delete_targets,
+)
 from analysis.settings.logging import log_access
 from analysis.state.dashboard import reset_dashboard_state
 from analysis.views.pivot_nested import render_pivot_nested
@@ -57,6 +67,7 @@ from analysis.views.components.page_utils import (
 )
 
 page_title = st.session_state.get("page_title") or "分析仪表盘"
+DEFAULT_PIVOT_AGGS = ["Mean - 平均值"]
 st.set_page_config(page_title=page_title, layout="wide")
 hide_login_sidebar_entry()
 st.title(f"📊 {page_title}")
@@ -131,36 +142,10 @@ def main() -> None:
         )
 
         if st.button("💾 保存所有配置", key="save_all_config"):
-            row_orders_map = st.session_state.get("pivot_row_orders", {})
-            if not isinstance(row_orders_map, dict):
-                row_orders_map = {}
-            row_fields = st.session_state.get("pivot_index", [])
-            if row_fields:
-                row_orders_map = {
-                    k: list(v) if isinstance(v, (list, tuple, set)) else []
-                    for k, v in row_orders_map.items()
-                    if k in row_fields
-                }
-            else:
-                row_orders_map = {}
-            payload = {
-                "baseline": st.session_state.get("baseline_config", {}),
-                "calc_rules": st.session_state.get("calc_rules", []),
-                "note": st.session_state.get("calc_note_input", ""),
-                "exclusions": st.session_state.get("exclusions", []),
-                "pivot": {
-                    "index": st.session_state.get("pivot_index", []),
-                    "columns": st.session_state.get("pivot_columns", []),
-                    "values": st.session_state.get("pivot_values", []),
-                    "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
-                    "agg_axis": st.session_state.get("pivot_agg_axis", "row"),
-                    "row_order": row_orders_map,
-                    "col_order": st.session_state.get("pivot_col_order", {}),
-                    "uniform_control_group": st.session_state.get(
-                        "uniform_control_group"
-                    ),
-                },
-            }
+            payload = build_calculation_payload(
+                st.session_state,
+                default_agg=DEFAULT_PIVOT_AGGS,
+            )
             save_calculation_config(selected_row["setup_name"], payload)
             st.success("配置已保存！")
 
@@ -171,65 +156,16 @@ def main() -> None:
     if st.button("🚀 加载源数据", type="primary"):
         full_cfg = fetch_setup_config(selected_row["setup_name"]) or {}
         calc_cfg = full_cfg.get("calculation") or {}
-        if isinstance(calc_cfg, list):
-            calc_cfg = {"calc_rules": calc_cfg}
 
         # 重置 UI 缓存，确保完全使用数据库配置
         reset_dashboard_state()
 
         # 覆盖缓存为数据库配置
-        st.session_state["calc_rules"] = calc_cfg.get("calc_rules", [])
-        st.session_state["calc_note"] = calc_cfg.get("note", "")
-        st.session_state["exclusions"] = calc_cfg.get("exclusions", [])
-        st.session_state["pivot_config"] = calc_cfg.get("pivot", {})
-        st.session_state["baseline_config"] = calc_cfg.get("baseline", {})
-
-        p_cfg = st.session_state["pivot_config"]
-        raw_agg = p_cfg.get("agg", ["Mean - 平均值"])
-        raw_aggs = list(raw_agg) if isinstance(raw_agg, (list, tuple, set)) else [
-            raw_agg
-        ]
-
-        st.session_state["pivot_index"] = p_cfg.get("index", [])
-        st.session_state["pivot_columns"] = p_cfg.get("columns", [])
-        st.session_state["pivot_values"] = p_cfg.get("values", [])
-        st.session_state["pivot_aggs"] = raw_aggs
-        agg_axis_cfg = p_cfg.get("agg_axis", "row")
-        if agg_axis_cfg not in {"row", "col"}:
-            agg_axis_cfg = "row"
-        st.session_state["pivot_agg_axis"] = agg_axis_cfg
-        row_order_cfg = p_cfg.get("row_order", {})
-        row_orders: dict[str, list[str]] = {}
-        if isinstance(row_order_cfg, dict):
-            if "field" in row_order_cfg and "values" in row_order_cfg:
-                field = row_order_cfg.get("field")
-                values = row_order_cfg.get("values", [])
-                if field:
-                    row_orders[str(field)] = (
-                        list(values)
-                        if isinstance(values, (list, tuple, set))
-                        else []
-                    )
-            else:
-                for field, values in row_order_cfg.items():
-                    if isinstance(values, (list, tuple, set)):
-                        row_orders[str(field)] = list(values)
-        st.session_state["pivot_row_orders"] = row_orders
-        st.session_state.pop("pivot_row_order_field", None)
-        st.session_state.pop("pivot_row_order_values", None)
-        st.session_state.pop("pivot_agg_axis_ui", None)
-        col_order_cfg = p_cfg.get("col_order", {})
-        if not isinstance(col_order_cfg, dict):
-            col_order_cfg = {}
-        st.session_state["pivot_col_order"] = {
-            k: list(v) if isinstance(v, (list, tuple, set)) else []
-            for k, v in col_order_cfg.items()
-        }
-        control_group_cfg = p_cfg.get("uniform_control_group")
-        if isinstance(control_group_cfg, dict):
-            st.session_state["uniform_control_group"] = control_group_cfg
-        else:
-            st.session_state.pop("uniform_control_group", None)
+        apply_calculation_config(
+            st.session_state,
+            calc_cfg,
+            default_agg=DEFAULT_PIVOT_AGGS,
+        )
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -318,10 +254,40 @@ def main() -> None:
             )
             
             if st.button("✅ 应用基线配置"):
-                st.session_state["baseline_config"] = {
-                    "subj_col": subj_col, "visit_col": visit_col,
-                    "baseline_val": baseline_val, "target_cols": target_cols
+                old_cfg = st.session_state.get("baseline_config", {}) or {}
+                old_targets = set(old_cfg.get("target_cols", []) or [])
+                new_targets = set(target_cols)
+                removed_targets = sorted(old_targets - new_targets)
+
+                calc_payload = build_calculation_payload(
+                    st.session_state,
+                    default_agg=DEFAULT_PIVOT_AGGS,
+                )
+                if removed_targets:
+                    outputs = [f"{t}_BL" for t in removed_targets]
+                    updated_cfg, removed = cascade_delete_targets(
+                        calc_payload, outputs
+                    )
+                else:
+                    updated_cfg = calc_payload
+                    removed = {"outputs": []}
+
+                updated_cfg["baseline"] = {
+                    "subj_col": subj_col,
+                    "visit_col": visit_col,
+                    "baseline_val": baseline_val,
+                    "target_cols": target_cols,
                 }
+                apply_calculation_config(
+                    st.session_state,
+                    updated_cfg,
+                    default_agg=DEFAULT_PIVOT_AGGS,
+                )
+                if removed.get("outputs"):
+                    st.info(
+                        "已级联删除依赖变量: "
+                        + ", ".join(removed["outputs"])
+                    )
                 st.rerun()
 
         if st.session_state.get("baseline_config"):
@@ -362,7 +328,24 @@ def main() -> None:
                 c1, c2 = st.columns([8, 1])
                 c1.markdown(f"**Step {i+1}:** `{rule['name']}` = **{rule['method']}** ({', '.join(rule['cols'])})")
                 if c2.button("🗑️", key=f"del_rule_{i}"):
-                    st.session_state["calc_rules"].pop(i)
+                    calc_payload = build_calculation_payload(
+                        st.session_state,
+                        default_agg=DEFAULT_PIVOT_AGGS,
+                    )
+                    node_id = f"derive_{i + 1}"
+                    updated_cfg, removed = cascade_delete_targets(
+                        calc_payload, [node_id]
+                    )
+                    apply_calculation_config(
+                        st.session_state,
+                        updated_cfg,
+                        default_agg=DEFAULT_PIVOT_AGGS,
+                    )
+                    if removed.get("outputs"):
+                        st.info(
+                            "已级联删除依赖变量: "
+                            + ", ".join(removed["outputs"])
+                        )
                     st.rerun()
 
         # ==========================================
@@ -399,21 +382,30 @@ def main() -> None:
             st.info(f"当前剔除: `{r['field']}` NOT IN {r['values']}")
 
         # =======================================================
-        # 【最终执行流水线】Pass 1 -> BDS -> Filter -> Pass 2
+        # 【最终执行流水线】基于 DAG 的统一执行
         # =======================================================
-        final_df = raw_df.copy()
-        # 1. Pass 1 计算
-        final_df = apply_calculations(final_df, st.session_state["calc_rules"])
-        # 2. 基线映射
-        final_df = apply_baseline_mapping(final_df, st.session_state.get("baseline_config", {}))
-        # 3. 剔除
-        if st.session_state.get("exclusions"):
-            for rule in st.session_state["exclusions"]:
-                f, vals = rule.get("field"), rule.get("values")
-                if f and f in final_df.columns and vals:
-                    final_df = final_df[~final_df[f].astype(str).isin([str(v) for v in vals])]
-        # 4. Pass 2 计算 (Change 规则生效)
-        final_df = apply_calculations(final_df, st.session_state["calc_rules"])
+        calc_payload = build_calculation_payload(
+            st.session_state,
+            default_agg=DEFAULT_PIVOT_AGGS,
+        )
+
+        with st.expander("🧭 DAG 依赖图", expanded=False):
+            graph = calc_payload.get("graph", {})
+            dot = build_graphviz_dot(graph)
+            try:
+                st.graphviz_chart(dot, use_container_width=True)
+            except Exception as exc:
+                st.warning(f"Graphviz render failed: {exc}")
+                st.code(dot, language="dot")
+
+            rows = build_dependency_rows(graph)
+            if rows:
+                st.markdown("##### 依赖列表")
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+            else:
+                st.info("暂无 DAG 节点。")
+
+        final_df = run_calculation_graph(raw_df, calc_payload.get("graph", {}))
 
         # ==========================================
         # [Step E] 透视分析 & 统计检验 & 绘图
