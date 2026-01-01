@@ -31,6 +31,10 @@ def sas_quantile(data: pd.Series, q: float) -> float:
     idx = int(np.ceil(target))
     return vals[idx - 1]
 
+@register_agg_method("Count - 计数")
+def agg_count(series: pd.Series) -> int:
+    """Return non-missing count for a series."""
+    return series.count()
 
 @register_agg_method("N")
 def agg_n(series: pd.Series) -> int:

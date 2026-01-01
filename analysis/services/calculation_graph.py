@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import pandas as pd
 import streamlit as st
 
+from analysis.plugins.methods import AGG_METHODS
 from analysis.services.analysis_service import apply_baseline_mapping, apply_calculations
 from analysis.services.calculation_config import GRAPH_ROOT_ID
 
@@ -133,6 +134,36 @@ def _sql_like_to_regex(pattern: str) -> str:
     escaped = re.escape(pattern)
     regex = escaped.replace(r"\%", ".*").replace(r"\_", ".")
     return f"^{regex}$"
+
+
+def _resolve_agg_func(func: Any) -> Any:
+    """Resolve aggregation function from registry or pandas."""
+    if callable(func):
+        return func
+    if func is None:
+        return None
+    name = str(func)
+    if name == "N":
+        return _count_non_missing
+    if name == "Missing - 缺失值数":
+        return _count_missing
+    return AGG_METHODS.get(name, name)
+
+
+def _count_non_missing(series: pd.Series) -> int:
+    """Count non-missing values, treating empty strings as missing for objects."""
+    if series.dtype == object:
+        s = series.astype(str).str.strip()
+        return int((~series.isna() & s.ne("")).sum())
+    return int(series.notna().sum())
+
+
+def _count_missing(series: pd.Series) -> int:
+    """Count missing values, treating empty strings as missing for objects."""
+    if series.dtype == object:
+        s = series.astype(str).str.strip()
+        return int((series.isna() | s.eq("")).sum())
+    return int(series.isna().sum())
 
 
 def build_graphviz_dot(graph: dict[str, Any]) -> str:
@@ -351,10 +382,12 @@ def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     """Apply an aggregate node to the dataframe."""
     group_by = [c for c in _listify(params.get("group_by")) if c in df.columns]
     metrics = params.get("metrics", [])
-    if not group_by or not isinstance(metrics, list):
+    if not isinstance(metrics, list):
         return df
 
-    aggregations: dict[str, tuple[str, str]] = {}
+    result = df.copy()
+    grouped = df.groupby(group_by, dropna=False) if group_by else None
+
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
@@ -363,16 +396,20 @@ def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
         if not col or not func or col not in df.columns:
             continue
         name = metric.get("name") or f"{func}_{col}"
-        aggregations[name] = (col, func)
+        agg_func = _resolve_agg_func(func)
+        if not agg_func:
+            continue
+        try:
+            if grouped is None:
+                value = agg_func(df[col])
+                result[name] = value
+            else:
+                result[name] = grouped[col].transform(agg_func)
+        except Exception as exc:
+            st.warning(f"Aggregate node failed: {exc}")
+            continue
 
-    if not aggregations:
-        return df
-
-    try:
-        return df.groupby(group_by).agg(**aggregations).reset_index()
-    except Exception as exc:
-        st.warning(f"Aggregate node failed: {exc}")
-        return df
+    return result
 
 
 def run_calculation_graph(df: pd.DataFrame, graph: dict[str, Any]) -> pd.DataFrame:

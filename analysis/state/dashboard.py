@@ -30,6 +30,11 @@ def reset_dashboard_state() -> None:
         "ex_op_",
         "ex_vals_",
         "ex_value_",
+        "agg_group_",
+        "agg_col_",
+        "agg_func_",
+        "agg_name_",
+        "agg_del_",
     ]
     for key in reset_keys:
         st.session_state.pop(key, None)

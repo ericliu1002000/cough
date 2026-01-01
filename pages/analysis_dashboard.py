@@ -310,10 +310,51 @@ def main() -> None:
         # [Step B] 衍生变量计算
         # ==========================================
         st.subheader("🧮 衍生变量计算")
-        
+
+        def build_default_agg_name(
+            group_by: list[str], col: str | None, func: Any | None
+        ) -> str:
+            """Build a default output name for aggregation rules."""
+            if not col or not func:
+                return ""
+            func_name = str(func).strip().replace(" ", "_")
+            group_part = "_".join([str(v) for v in group_by if v]) or "all"
+            return f"{func_name}_{col}_by_{group_part}"
+
+        def collect_agg_outputs(rules: list[dict[str, Any]]) -> list[str]:
+            """Collect aggregation output names for column selection."""
+            outputs: list[str] = []
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                group_by = rule.get("group_by", [])
+                if not isinstance(group_by, list):
+                    group_by = [group_by] if group_by else []
+                metrics = rule.get("metrics", [])
+                if not isinstance(metrics, list):
+                    continue
+                for metric in metrics:
+                    if not isinstance(metric, dict):
+                        continue
+                    name = metric.get("name")
+                    if not name:
+                        name = build_default_agg_name(
+                            group_by,
+                            metric.get("col"),
+                            metric.get("fn") or metric.get("func"),
+                        )
+                    if name:
+                        outputs.append(name)
+            return outputs
+
         # 模拟基线映射以获取列名
         df_preview_bl = apply_baseline_mapping(df_pass1, st.session_state.get("baseline_config", {}))
-        current_cols = list(df_preview_bl.columns) + [r['name'] for r in st.session_state["calc_rules"]]
+        agg_outputs = collect_agg_outputs(st.session_state.get("aggregations", []))
+        agg_input_cols = list(df_preview_bl.columns)
+        current_cols = list(df_preview_bl.columns)
+        current_cols.extend([r.get("name") for r in st.session_state["calc_rules"] if r.get("name")])
+        current_cols.extend(agg_outputs)
+        current_cols = list(dict.fromkeys([c for c in current_cols if c]))
         
         with st.expander("➕ 添加新计算规则", expanded=True):
             c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
@@ -557,6 +598,172 @@ def main() -> None:
                     summaries.append(f"`{field}` {label} {values}")
             if summaries:
                 st.info("当前剔除: " + " AND ".join(summaries))
+
+        # ==========================================
+        # [Step D] 聚合变量（广播）
+        # ==========================================
+        st.divider()
+        st.subheader("🧮 聚合变量（广播）")
+        st.caption("按分组列计算统计值，并将结果广播回原始数据。")
+
+        agg_func_choices = [(name, name) for name in AGG_METHODS.keys()]
+        agg_func_labels = [label for label, _ in agg_func_choices]
+        agg_func_by_label = {label: func for label, func in agg_func_choices}
+        agg_label_by_func = {func: label for label, func in agg_func_choices}
+
+        aggregations = st.session_state.get("aggregations", [])
+        if not isinstance(aggregations, list):
+            aggregations = []
+
+        with st.expander("配置聚合规则", expanded=True):
+            new_rules: list[dict[str, Any]] = []
+            delete_idx: int | None = None
+            global_label = "全表"
+
+            if not aggregations:
+                st.caption("暂无聚合规则。")
+
+            for i, rule in enumerate(aggregations):
+                rule = dict(rule or {})
+                group_by = rule.get("group_by", [])
+                if not isinstance(group_by, list):
+                    group_by = [group_by] if group_by else []
+
+                metrics = rule.get("metrics", [])
+                metric = metrics[0] if metrics and isinstance(metrics[0], dict) else {}
+                metric_col = metric.get("col")
+                metric_func = metric.get("fn") or metric.get("func") or "mean"
+                metric_name = metric.get("name") or ""
+
+                c1, c2, c3, c4, c5 = st.columns([3, 2, 2, 3, 1])
+
+                with c1:
+                    group_options = [global_label] + list(agg_input_cols)
+                    default_group = (
+                        [global_label]
+                        if not group_by
+                        else [c for c in group_by if c in agg_input_cols]
+                    )
+                    group_sel = st.multiselect(
+                        "分组列",
+                        options=group_options,
+                        default=default_group,
+                        key=f"agg_group_{i}",
+                    )
+                    if global_label in group_sel:
+                        group_sel = []
+                    else:
+                        group_sel = [c for c in group_sel if c in agg_input_cols]
+
+                field_options = agg_input_cols if agg_input_cols else ["(无可用字段)"]
+                field_disabled = not agg_input_cols
+                if metric_col not in field_options:
+                    metric_col = field_options[0] if agg_input_cols else None
+                try:
+                    col_idx = field_options.index(metric_col) if metric_col in field_options else 0
+                except ValueError:
+                    col_idx = 0
+
+                with c2:
+                    metric_col_sel = st.selectbox(
+                        "聚合列",
+                        options=field_options,
+                        index=col_idx,
+                        key=f"agg_col_{i}",
+                        disabled=field_disabled,
+                    )
+                if field_disabled:
+                    metric_col_sel = None
+
+                func_label = agg_label_by_func.get(metric_func, None)
+                if func_label not in agg_func_labels:
+                    func_label = agg_func_labels[0] if agg_func_labels else ""
+                func_idx = agg_func_labels.index(func_label) if func_label in agg_func_labels else 0
+
+                with c3:
+                    func_label_sel = st.selectbox(
+                        "函数",
+                        options=agg_func_labels,
+                        index=func_idx,
+                        key=f"agg_func_{i}",
+                    )
+                metric_func_sel = agg_func_by_label.get(func_label_sel, "mean")
+
+                default_name = build_default_agg_name(
+                    group_sel,
+                    metric_col_sel,
+                    metric_func_sel,
+                )
+                with c4:
+                    name_input = st.text_input(
+                        "输出列名",
+                        value=metric_name,
+                        placeholder=default_name,
+                        key=f"agg_name_{i}",
+                    )
+                final_name = name_input.strip() or default_name
+
+                with c5:
+                    if st.button("🗑️", key=f"agg_del_{i}"):
+                        delete_idx = i
+
+                new_rules.append(
+                    {
+                        "group_by": group_sel,
+                        "metrics": [
+                            {
+                                "col": metric_col_sel,
+                                "fn": metric_func_sel,
+                                "name": final_name,
+                            }
+                        ],
+                        "broadcast": True,
+                    }
+                )
+
+            if st.button("➕ 添加聚合规则", key="agg_add_rule"):
+                aggregations.append(
+                    {
+                        "group_by": [],
+                        "metrics": [
+                            {
+                                "col": agg_input_cols[0] if agg_input_cols else None,
+                                "fn": agg_func_choices[0][1],
+                                "name": "",
+                            }
+                        ],
+                        "broadcast": True,
+                    }
+                )
+                st.session_state["aggregations"] = aggregations
+                st.rerun()
+
+            if delete_idx is not None:
+                st.session_state["aggregations"] = [
+                    rule for idx, rule in enumerate(new_rules) if idx != delete_idx
+                ]
+                st.rerun()
+
+            st.session_state["aggregations"] = new_rules
+
+        if st.session_state.get("aggregations"):
+            summaries = []
+            for rule in st.session_state["aggregations"]:
+                if not isinstance(rule, dict):
+                    continue
+                group_by = rule.get("group_by") or []
+                metrics = rule.get("metrics") or []
+                if not metrics:
+                    continue
+                metric = metrics[0] if isinstance(metrics[0], dict) else {}
+                col = metric.get("col")
+                func = metric.get("fn") or metric.get("func")
+                name = metric.get("name") or build_default_agg_name(group_by, col, func)
+                if col and func:
+                    group_label = ", ".join(group_by) if group_by else global_label
+                    summaries.append(f"`{name}` = {func}({col}) BY {group_label}")
+            if summaries:
+                st.info("当前聚合: " + " | ".join(summaries))
 
         # =======================================================
         # 【最终执行流水线】基于 DAG 的统一执行

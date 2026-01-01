@@ -152,6 +152,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                 if col:
                     input_cols.append(col)
                 name = metric.get("name")
+                if not name and col:
+                    func = metric.get("fn") or metric.get("func")
+                    if func:
+                        name = f"{func}_{col}"
                 if name:
                     outputs_cols.append(name)
         node_id = f"aggregate_{idx}"
@@ -384,6 +388,7 @@ def build_calculation_payload(
         "calc_rules": state.get("calc_rules", []),
         "note": note,
         "exclusions": state.get("exclusions", []),
+        "aggregations": state.get("aggregations", []),
         "pivot": {
             "index": _listify(state.get("pivot_index"), []),
             "columns": _listify(state.get("pivot_columns"), []),
@@ -410,6 +415,11 @@ def apply_calculation_config(
     state["calc_rules"] = calc_cfg.get("calc_rules", [])
     state["calc_note"] = calc_cfg.get("note", "")
     state["exclusions"] = calc_cfg.get("exclusions", [])
+    state["aggregations"] = (
+        calc_cfg.get("aggregations")
+        or calc_cfg.get("aggregate_rules")
+        or []
+    )
     state["pivot_config"] = calc_cfg.get("pivot", {})
     state["baseline_config"] = calc_cfg.get("baseline", {})
     state["calc_graph"] = calc_cfg.get("graph", {})
