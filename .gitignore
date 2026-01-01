@@ -18,6 +18,7 @@ venv/
 ENV/
 docs/
 data/
+static/docs/
 **/doc/
 .build/
 dist/

@@ -126,7 +126,7 @@ def test_run_analysis_executes_query(monkeypatch) -> None:
             """Return a dummy connection instance."""
             return DummyConn()
 
-    monkeypatch.setattr(svc, "get_engine", lambda: DummyEngine())
+    monkeypatch.setattr(svc, "get_business_engine", lambda: DummyEngine())
 
     def fake_read_sql(sql, conn):
         """Return a minimal DataFrame for the fake SQL execution."""
@@ -144,7 +144,6 @@ def test_run_analysis_executes_query(monkeypatch) -> None:
             "selected_tables": ["t"],
             "table_columns_map": {"t": ["id"]},
             "filters": {"conditions": []},
-            "subject_blocklist": "",
         }
     )
 

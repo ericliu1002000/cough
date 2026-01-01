@@ -66,8 +66,8 @@ def build_sql(
     selected_tables: List[str],
     table_columns_map: Dict[str, List[str]],
     filters: Dict[str, Any],
-    subject_blocklist: str,
     meta_data: Dict[str, List[str]],
+    limit: int = 1000,
     group_by: List[Dict[str, Any]] | None = None,
     aggregations: List[Dict[str, Any]] | None = None,
 ) -> str | None:
@@ -134,18 +134,6 @@ def build_sql(
 
     where_conditions: List[str] = []
 
-    if subject_blocklist:
-        ids = [
-            x.strip()
-            for x in subject_blocklist.replace("，", ",").split("\n")
-            if x.strip()
-        ]
-        if ids:
-            id_list_str = "', '".join(ids)
-            where_conditions.append(
-                f"`{base_table}`.`{base_id_col}` NOT IN ('{id_list_str}')"
-            )
-
     if "conditions" in filters:
         for cond in filters["conditions"]:
             tbl = cond["table"]
@@ -173,7 +161,7 @@ def build_sql(
         if gb_parts:
             group_by_sql = "\nGROUP BY\n  " + ",\n  ".join(gb_parts)
 
-    limit_sql = "\nLIMIT 1000"
+    limit_sql = f"\nLIMIT {int(limit)}"
 
     final_sql = f"{select_sql}{from_sql}{join_sql}{where_sql}{group_by_sql}{limit_sql};"
     return final_sql

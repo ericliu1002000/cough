@@ -10,7 +10,10 @@ from analysis.settings.logging import log_access
 from analysis.settings.config import get_business_engine
 from analysis.settings.constants import OPERATORS, SUBJECT_ID_ALIASES
 from analysis.repositories.metadata_repo import get_id_column, load_table_metadata
-from analysis.views.components.page_utils import hide_login_sidebar_entry
+from analysis.views.components.page_utils import (
+    hide_login_sidebar_entry,
+    render_sidebar_navigation,
+)
 from setup_catalog.services.analysis_list_setups import (
     delete_setup_config,
     fetch_all_setups,
@@ -25,6 +28,7 @@ from analysis.state.data_builder import add_filter_row, init_filter_rows, remove
 
 # 从环境变量读取可选的最大表数量，默认为 5
 MAX_TABLE_NUMBER = int(os.getenv("MAX_TABLE_NUMBER", "5"))
+PREVIEW_ROW_LIMIT = 50000
 SETUP_NAME_SUGGESTION_PLACEHOLDER = "<选择已有配置名称>"
 
 
@@ -42,13 +46,13 @@ def apply_setup_name_suggestion() -> None:
 # 2. 界面布局 (Streamlit)
 # ===========================
 
-st.set_page_config(page_title="临床数据拼表器", layout="wide")
+st.set_page_config(page_title="Dataset Builder", layout="wide")
 hide_login_sidebar_entry()
 require_login()
 log_access("data_builder")
 current_setup_name = st.session_state.get("current_setup_name")
 title_suffix = f" ({current_setup_name})" if current_setup_name else ""
-st.title(f"🏥 临床试验数据拼表工具{title_suffix}")
+st.title(f"Dataset Builder{title_suffix}")
 
 meta_data_visible = load_table_metadata(include_hidden=False)
 meta_data_all = load_table_metadata(include_hidden=True)
@@ -67,6 +71,7 @@ setup_desc_map = {
 
 # --- 侧边栏 ---
 with st.sidebar:
+    render_sidebar_navigation(active_page="data_builder")
     # 配置管理区
     st.header("🧩 分析集配置")
 
@@ -109,12 +114,6 @@ with st.sidebar:
                     st.session_state[f"f_col_{i}"] = cond.get("col")
                     st.session_state[f"f_op_{i}"] = cond.get("op")
                     st.session_state[f"f_val_{i}"] = cond.get("val")
-                # 恢复黑名单
-                if "subject_blocklist" in extraction_cfg:
-                    st.session_state["subject_blocklist"] = extraction_cfg[
-                        "subject_blocklist"
-                    ]
-
                 # 恢复 Group By / 聚合配置（如果有）
                 if "group_by" in extraction_cfg:
                     gb_list = extraction_cfg.get("group_by") or []
@@ -160,11 +159,9 @@ with st.sidebar:
 
     st.header("⚙️ 全局配置")
     st.info(f"🔗 智能 Join 逻辑已启用。\nKey: {', '.join(SUBJECT_ID_ALIASES)}")
-    
 
 # --- 主界面 ---
-subject_blocklist = ""
-st.subheader("1. 选择要拼接的表 (按 Join 顺序)")
+st.subheader("1. Select tables to join (Join order)")
 selected_tables = st.multiselect(
     f"请选择表 (最多 {MAX_TABLE_NUMBER} 张):",
     options=all_tables,
@@ -174,7 +171,7 @@ selected_tables = st.multiselect(
 )
 
 if not selected_tables:
-    st.info("👈 请先选择至少一张表。")
+    # st.info("👈 请先选择至少一张表。")
     st.stop()
 
 # 限制最大选表数
@@ -400,8 +397,8 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
         selected_tables,
         table_columns_map,
         filters_config,
-        subject_blocklist,
         meta_data_all,
+        limit=PREVIEW_ROW_LIMIT,
         group_by=group_by_config if use_group_by else None,
         aggregations=aggregations_config if use_group_by else None,
     )
@@ -417,7 +414,10 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
                 with engine.connect().execution_options(timeout=60) as conn:
                     df_result = pd.read_sql(sql, conn)
             
-            st.success(f"查询成功！预览前 {len(df_result)} 行 (已限制 Limit 1000)。")
+            st.success(
+                f"查询成功！预览前 {len(df_result)} 行 "
+                f"(已限制 Limit {PREVIEW_ROW_LIMIT})."
+            )
             st.dataframe(df_result, width="stretch")
             
             # 只有当有数据时才显示下载
@@ -484,7 +484,6 @@ if st.button("💾 保存 / 更新配置"):
             "selected_tables": selected_tables,
             "table_columns_map": table_columns_map,
             "filters": filters_config,
-            "subject_blocklist": subject_blocklist,
             "group_by": group_by_config if use_group_by else [],
             "aggregations": aggregations_config if use_group_by else [],
             "max_table_number": MAX_TABLE_NUMBER,

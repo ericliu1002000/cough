@@ -17,6 +17,7 @@ from analysis.settings.logging import log_access
 from analysis.views.components.page_utils import (
     build_page_url,
     hide_login_sidebar_entry,
+    render_sidebar_navigation,
     truncate_text,
 )
 
@@ -24,6 +25,9 @@ st.set_page_config(page_title="分析配置", layout="wide")
 hide_login_sidebar_entry()
 require_login()
 log_access("analysis_setups")
+
+with st.sidebar:
+    render_sidebar_navigation(active_page="analysis_setups")
 
 st.markdown(
     """

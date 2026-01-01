@@ -53,6 +53,7 @@ from analysis.views.pivot_nested import render_pivot_nested
 from analysis.views.components.page_utils import (
     build_page_url,
     hide_login_sidebar_entry,
+    render_sidebar_navigation,
 )
 
 page_title = st.session_state.get("page_title") or "分析仪表盘"
@@ -93,6 +94,7 @@ def main() -> None:
     log_access("analysis_dashboard")
     # --- 1. 侧边栏 ---
     with st.sidebar:
+        render_sidebar_navigation(active_page="analysis_dashboard")
         st.header("🧩 分析集配置")
         setups = fetch_all_setups()
 

@@ -20,7 +20,6 @@ def test_build_sql_basic() -> None:
                 {"table": "adsl", "col": "AGE", "op": ">", "val": 30}
             ]
         },
-        subject_blocklist="101\n102",
         meta_data=meta_data,
     )
 
@@ -28,6 +27,5 @@ def test_build_sql_basic() -> None:
     assert "FROM `adsl`" in sql
     assert "`adsl`.`SUBJID` AS `SUBJECTID`" in sql
     assert "`adsl`.`AGE` AS `adsl_AGE`" in sql
-    assert "NOT IN ('101', '102')" in sql
     assert "AGE` > 30" in sql
     assert "LIMIT 1000" in sql

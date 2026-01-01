@@ -9,7 +9,10 @@ from analysis.auth.session import require_login
 from analysis.settings.config import TABLE_DESCRIBE_COLUMN
 from analysis.settings.logging import log_access
 from analysis.exports.subject_profile import to_excel_sections_bytes
-from analysis.views.components.page_utils import hide_login_sidebar_entry
+from analysis.views.components.page_utils import (
+    hide_login_sidebar_entry,
+    render_sidebar_navigation,
+)
 from db.services.metadata import get_table_column_display_map
 from db.services.subject_profile import (
     fetch_subject_id_candidates,
@@ -183,6 +186,7 @@ def main() -> None:
         st.session_state["subject_id_select"] = query_subject_id
 
     with st.sidebar:
+        render_sidebar_navigation(active_page="subject_profile")
         st.header("受试者选择")
         subject_options = _fetch_subject_id_options(limit=20000)
         current_subject = st.session_state.get("selected_subject_id")

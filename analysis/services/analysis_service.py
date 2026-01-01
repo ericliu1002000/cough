@@ -1,5 +1,6 @@
 """Core analysis pipeline helpers used by dashboard pages."""
 
+import os
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -16,18 +17,18 @@ from analysis.repositories.sql_builder import build_sql
 def run_analysis(config: Dict[str, Any]) -> tuple[str, pd.DataFrame]:
     """Build SQL and fetch raw data for the dashboard."""
     meta_data = load_table_metadata(include_hidden=True)
+    row_limit = int(os.getenv("DASHBOARD_ROW_LIMIT", "50000"))
 
     selected_tables = config.get("selected_tables", [])
     table_columns_map = config.get("table_columns_map", {})
     filters = config.get("filters", {})
-    subject_blocklist = config.get("subject_blocklist", "")
 
     sql = build_sql(
         selected_tables=selected_tables,
         table_columns_map=table_columns_map,
         filters=filters,
-        subject_blocklist=subject_blocklist,
         meta_data=meta_data,
+        limit=row_limit,
     )
 
     if not sql:
