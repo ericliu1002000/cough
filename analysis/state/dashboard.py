@@ -26,6 +26,10 @@ def reset_dashboard_state() -> None:
         "pivot_col_order_selected_",
         "pivot_col_order_up_",
         "pivot_col_order_down_",
+        "ex_field_",
+        "ex_op_",
+        "ex_vals_",
+        "ex_value_",
     ]
     for key in reset_keys:
         st.session_state.pop(key, None)

@@ -66,7 +66,7 @@ from analysis.views.components.page_utils import (
     render_sidebar_navigation,
 )
 
-page_title = st.session_state.get("page_title") or "分析仪表盘"
+page_title = st.session_state.get("page_title") or "Analysis Dashboard"
 DEFAULT_PIVOT_AGGS = ["Mean - 平均值"]
 st.set_page_config(page_title=page_title, layout="wide")
 hide_login_sidebar_entry()
@@ -114,9 +114,10 @@ def main() -> None:
             return
 
         option_labels = [f"{row['setup_name']}" for row in setups]
-        query_setup = st.query_params.get("setup_name")
-        if isinstance(query_setup, list):
-            query_setup = query_setup[0] if query_setup else None
+        query_setup_param = st.query_params.get("setup_name")
+        if isinstance(query_setup_param, list):
+            query_setup_param = query_setup_param[0] if query_setup_param else None
+        query_setup = query_setup_param
         if not query_setup:
             query_setup = st.session_state.pop("jump_setup", None)
         default_index = 0
@@ -153,7 +154,15 @@ def main() -> None:
     st.session_state["current_setup_name"] = selected_row["setup_name"]
 
     # --- 2. 加载源数据 ---
-    if st.button("🚀 加载源数据", type="primary"):
+    load_clicked = st.button("🚀 加载源数据", type="primary")
+    auto_load = False
+    if query_setup_param and query_setup_param == selected_row["setup_name"]:
+        last_auto = st.session_state.get("auto_loaded_setup_name")
+        if last_auto != query_setup_param:
+            auto_load = True
+            st.session_state["auto_loaded_setup_name"] = query_setup_param
+
+    if load_clicked or auto_load:
         full_cfg = fetch_setup_config(selected_row["setup_name"]) or {}
         calc_cfg = full_cfg.get("calculation") or {}
 
@@ -353,33 +362,201 @@ def main() -> None:
         # ==========================================
         st.divider()
         st.markdown("##### 🗑️ 数据剔除规则")
-        
-        with st.expander("配置剔除条件"):
-            ec1, ec2 = st.columns([2, 3])
-            cur_excl = st.session_state.get("exclusions", [])
-            def_field = cur_excl[0]["field"] if cur_excl else (current_cols[0] if current_cols else None)
-            def_vals = cur_excl[0]["values"] if cur_excl else []
-            
-            with ec1:
-                try: f_idx = current_cols.index(def_field) if def_field in current_cols else 0
-                except: f_idx = 0
-                excl_field = st.selectbox("字段名", current_cols, index=f_idx, key="ex_f")
-            
-            with ec2:
-                if excl_field and excl_field in df_preview_bl.columns:
-                    u_vals = df_preview_bl[excl_field].astype(str).unique().tolist()[:200]
-                    excl_values = st.multiselect("剔除值 (Not In)", u_vals, default=def_vals, key="ex_v")
-                else:
-                    excl_values = []
+        st.caption("多条规则之间为 AND 关系。")
 
-            if excl_values:
-                st.session_state["exclusions"] = [{"field": excl_field, "values": excl_values}]
-            else:
-                st.session_state["exclusions"] = []
-                
+        def normalize_exclusion_op(op: Any) -> str:
+            """Normalize exclusion operators for UI."""
+            raw = str(op or "not_in").strip().lower()
+            raw = raw.replace(" ", "_")
+            mapping = {
+                "notin": "not_in",
+                "not-in": "not_in",
+                "=": "eq",
+                "==": "eq",
+                "!=": "ne",
+                "<>": "ne",
+                ">": "gt",
+                ">=": "ge",
+                "≥": "ge",
+                "<": "lt",
+                "<=": "le",
+                "≤": "le",
+                "like": "like",
+                "contains": "like",
+                "is_null": "is_null",
+                "null": "is_null",
+                "empty": "is_null",
+                "isnull": "is_null",
+                "为空": "is_null",
+                "is_not_null": "is_not_null",
+                "not_null": "is_not_null",
+                "notnull": "is_not_null",
+                "not_empty": "is_not_null",
+                "不为空": "is_not_null",
+            }
+            return mapping.get(raw, raw)
+
+        op_choices = [
+            ("=", "eq"),
+            ("!=", "ne"),
+            ("in", "in"),
+            ("not in", "not_in"),
+            (">", "gt"),
+            (">=", "ge"),
+            ("<", "lt"),
+            ("<=", "le"),
+            ("like", "like"),
+            ("为空", "is_null"),
+            ("不为空", "is_not_null"),
+        ]
+        op_by_label = {label: op for label, op in op_choices}
+        label_by_op = {op: label for label, op in op_choices}
+
+        exclusions = st.session_state.get("exclusions", [])
+        if not isinstance(exclusions, list):
+            exclusions = []
+
+        with st.expander("配置剔除条件", expanded=True):
+            new_rules: list[dict[str, Any]] = []
+            delete_idx: int | None = None
+
+            if not exclusions:
+                st.caption("暂无剔除条件。")
+
+            for i, rule in enumerate(exclusions):
+                rule = dict(rule or {})
+                rule_op = normalize_exclusion_op(rule.get("op", "not_in"))
+                rule_values = rule.get("values", [])
+                if not isinstance(rule_values, list):
+                    rule_values = [rule_values] if rule_values is not None else []
+
+                c1, c2, c3, c4 = st.columns([2, 2, 5, 1])
+
+                field_options = current_cols if current_cols else ["(无可用字段)"]
+                field_disabled = not current_cols
+                field = rule.get("field")
+                try:
+                    field_idx = field_options.index(field) if field in field_options else 0
+                except ValueError:
+                    field_idx = 0
+
+                with c1:
+                    selected_field = st.selectbox(
+                        "字段名",
+                        field_options,
+                        index=field_idx,
+                        key=f"ex_field_{i}",
+                        disabled=field_disabled,
+                    )
+                if field_disabled:
+                    selected_field = None
+
+                label = label_by_op.get(rule_op, "not in")
+                try:
+                    op_idx = [lbl for lbl, _ in op_choices].index(label)
+                except ValueError:
+                    op_idx = 1
+
+                with c2:
+                    selected_label = st.selectbox(
+                        "条件",
+                        [lbl for lbl, _ in op_choices],
+                        index=op_idx,
+                        key=f"ex_op_{i}",
+                    )
+                selected_op = op_by_label.get(selected_label, "not_in")
+
+                values: list[Any] = []
+                with c3:
+                    if selected_op in {"in", "not_in"}:
+                        if selected_field and selected_field in df_preview_bl.columns:
+                            u_vals = (
+                                df_preview_bl[selected_field]
+                                .astype(str)
+                                .unique()
+                                .tolist()[:200]
+                            )
+                        else:
+                            u_vals = []
+                        default_vals = [
+                            str(v)
+                            for v in rule_values
+                            if str(v) in u_vals
+                        ]
+                        values = st.multiselect(
+                            "值",
+                            u_vals,
+                            default=default_vals,
+                            key=f"ex_vals_{i}",
+                        )
+                    elif selected_op in {"gt", "ge", "lt", "le", "eq", "ne"}:
+                        default_val = str(rule_values[0]) if rule_values else ""
+                        val = st.text_input(
+                            "值",
+                            value=default_val,
+                            placeholder="例如 10",
+                            key=f"ex_value_{i}",
+                        )
+                        values = [val] if val != "" else []
+                    elif selected_op == "like":
+                        default_val = str(rule_values[0]) if rule_values else ""
+                        val = st.text_input(
+                            "模式",
+                            value=default_val,
+                            placeholder="例如 %abc%",
+                            key=f"ex_value_{i}",
+                        )
+                        values = [val] if val != "" else []
+                    else:
+                        st.caption("无需填写值")
+                        values = []
+
+                with c4:
+                    if st.button("🗑️", key=f"ex_del_{i}"):
+                        delete_idx = i
+
+                new_rules.append(
+                    {
+                        "field": selected_field,
+                        "op": selected_op,
+                        "values": values,
+                    }
+                )
+
+            if st.button("➕ 添加条件", key="ex_add_rule"):
+                exclusions.append(
+                    {
+                        "field": current_cols[0] if current_cols else None,
+                        "op": "not_in",
+                        "values": [],
+                    }
+                )
+                st.session_state["exclusions"] = exclusions
+                st.rerun()
+
+            if delete_idx is not None:
+                st.session_state["exclusions"] = [
+                    rule for idx, rule in enumerate(new_rules) if idx != delete_idx
+                ]
+                st.rerun()
+
+            st.session_state["exclusions"] = new_rules
+
         if st.session_state.get("exclusions"):
-            r = st.session_state["exclusions"][0]
-            st.info(f"当前剔除: `{r['field']}` NOT IN {r['values']}")
+            summaries = []
+            for rule in st.session_state["exclusions"]:
+                field = rule.get("field")
+                op = normalize_exclusion_op(rule.get("op", "not_in"))
+                values = rule.get("values", [])
+                if not field:
+                    continue
+                label = label_by_op.get(op, op)
+                if op in {"is_null", "is_not_null"}:
+                    summaries.append(f"`{field}` {label}")
+                else:
+                    summaries.append(f"`{field}` {label} {values}")
+            if summaries:
+                st.info("当前剔除: " + " AND ".join(summaries))
 
         # =======================================================
         # 【最终执行流水线】基于 DAG 的统一执行
@@ -392,8 +569,9 @@ def main() -> None:
         with st.expander("🧭 DAG 依赖图", expanded=False):
             graph = calc_payload.get("graph", {})
             dot = build_graphviz_dot(graph)
+            chart_col, _ = st.columns([1, 2])
             try:
-                st.graphviz_chart(dot, use_container_width=True)
+                chart_col.graphviz_chart(dot, use_container_width=True)
             except Exception as exc:
                 st.warning(f"Graphviz render failed: {exc}")
                 st.code(dot, language="dot")

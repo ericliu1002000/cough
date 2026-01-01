@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from typing import Any, Iterable
 
@@ -44,14 +45,94 @@ def _escape_dot_label(value: str) -> str:
     )
 
 
-def _summarize_outputs(outputs: list[Any], max_cols: int = 3) -> str:
-    """Summarize output columns for display."""
-    clean = [str(c) for c in outputs if c]
+def _summarize_items(
+    items: list[Any],
+    *,
+    max_items: int | None = 2,
+    empty: str = "-",
+) -> str:
+    """Summarize items for display."""
+    clean = [str(c) for c in items if c]
     if not clean:
-        return ""
-    if len(clean) <= max_cols:
+        return empty
+    if max_items is None or len(clean) <= max_items:
         return ", ".join(clean)
-    return ", ".join(clean[:max_cols]) + f" +{len(clean) - max_cols}"
+    return ", ".join(clean[:max_items]) + f" +{len(clean) - max_items}"
+
+
+def _node_display_name(node: dict[str, Any], *, max_items: int | None = 2) -> str:
+    """Return the display name for a node."""
+    node_type = str(node.get("type") or "")
+    if node_type == "source" or node.get("id") == GRAPH_ROOT_ID:
+        return "dataset"
+    outputs = [
+        c for c in _listify(node.get("outputs_cols")) if c and c != "*"
+    ]
+    if outputs:
+        return _summarize_items(outputs, max_items=max_items)
+    if node_type == "filter":
+        params = node.get("params") or {}
+        field = params.get("field")
+        if field:
+            return f"filter: {field}"
+        return "filter"
+    return str(node.get("id") or "-")
+
+
+def _node_dependency_names(node: dict[str, Any]) -> list[Any]:
+    """Return dependency variable names for a node."""
+    inputs_cols = [c for c in _listify(node.get("inputs_cols")) if c]
+    if inputs_cols:
+        return inputs_cols
+    return _listify(node.get("inputs"))
+
+
+def _normalize_filter_op(op: Any) -> str:
+    """Normalize filter operators."""
+    raw = str(op or "not_in").strip().lower()
+    raw = raw.replace(" ", "_")
+    mapping = {
+        "notin": "not_in",
+        "not-in": "not_in",
+        "not_in": "not_in",
+        "in": "in",
+        "=": "eq",
+        "==": "eq",
+        "eq": "eq",
+        "!=": "ne",
+        "<>": "ne",
+        "ne": "ne",
+        ">": "gt",
+        "gt": "gt",
+        ">=": "ge",
+        "ge": "ge",
+        "gte": "ge",
+        "<": "lt",
+        "lt": "lt",
+        "<=": "le",
+        "le": "le",
+        "lte": "le",
+        "like": "like",
+        "contains": "like",
+        "is_null": "is_null",
+        "null": "is_null",
+        "empty": "is_null",
+        "isnull": "is_null",
+        "为空": "is_null",
+        "is_not_null": "is_not_null",
+        "not_null": "is_not_null",
+        "notnull": "is_not_null",
+        "not_empty": "is_not_null",
+        "不为空": "is_not_null",
+    }
+    return mapping.get(raw, raw)
+
+
+def _sql_like_to_regex(pattern: str) -> str:
+    """Convert SQL LIKE pattern to regex."""
+    escaped = re.escape(pattern)
+    regex = escaped.replace(r"\%", ".*").replace(r"\_", ".")
+    return f"^{regex}$"
 
 
 def build_graphviz_dot(graph: dict[str, Any]) -> str:
@@ -60,18 +141,24 @@ def build_graphviz_dot(graph: dict[str, Any]) -> str:
     if not isinstance(nodes, list):
         return "digraph G {}"
 
-    lines = ["digraph G {", "rankdir=LR;", "node [shape=box];"]
+    lines = [
+        "digraph G {",
+        "rankdir=LR;",
+        "graph [ranksep=0.35, nodesep=0.25];",
+        "node [shape=box, fontsize=10, margin=\"0.04,0.02\"];",
+    ]
     for node in nodes:
         node_id = str(node.get("id") or "")
         if not node_id:
             continue
         node_type = str(node.get("type") or "")
-        outputs = _summarize_outputs(node.get("outputs_cols", []))
-        label_parts = [node_id]
-        if node_type:
-            label_parts.append(node_type)
-        if outputs:
-            label_parts.append(outputs)
+        node_name = _node_display_name(node, max_items=2)
+        depends = _summarize_items(_node_dependency_names(node), max_items=3)
+        label_parts = [
+            f"node: {node_name}",
+            f"type: {node_type or '-'}",
+            f"depends: {depends}",
+        ]
         label = _escape_dot_label("\n".join(label_parts))
         shape = "oval" if node_type == "source" or node_id == GRAPH_ROOT_ID else "box"
         lines.append(f"\"{_escape_dot_label(node_id)}\" [label=\"{label}\", shape={shape}];")
@@ -165,16 +252,99 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     """Apply a filter node to the dataframe."""
     field = params.get("field")
     values = _listify(params.get("values"))
-    if not field or not values or field not in df.columns:
+    if not field or field not in df.columns:
         return df
 
-    op = str(params.get("op") or "not_in").strip().lower().replace(" ", "_")
-    value_set = {str(v) for v in values}
-    series = df[field].astype(str)
+    op = _normalize_filter_op(params.get("op"))
+    series = df[field]
 
-    if op in {"in"}:
-        return df[series.isin(value_set)]
-    return df[~series.isin(value_set)]
+    if op in {"is_null", "is_not_null"}:
+        null_mask = series.isna()
+        if series.dtype == object:
+            null_mask |= series.astype(str).str.strip().eq("")
+        return df[~null_mask] if op == "is_not_null" else df[null_mask]
+
+    if op in {"in", "not_in"}:
+        cleaned_values = []
+        for val in values:
+            try:
+                if pd.isna(val):
+                    continue
+            except Exception:
+                if val is None:
+                    continue
+            cleaned_values.append(val)
+        if not cleaned_values:
+            return df
+        if pd.api.types.is_numeric_dtype(series):
+            series_num = pd.to_numeric(series, errors="coerce")
+            values_num = (
+                pd.to_numeric(pd.Series(cleaned_values), errors="coerce")
+                .dropna()
+                .tolist()
+            )
+            if not values_num:
+                return df
+            mask = series_num.isin(values_num)
+        else:
+            series_str = series.astype(str)
+            value_set = {str(v) for v in cleaned_values}
+            mask = series_str.isin(value_set)
+        return df[mask] if op == "in" else df[~mask]
+
+    if op in {"gt", "ge", "lt", "le"}:
+        if not values:
+            return df
+        target = pd.to_numeric(values[0], errors="coerce")
+        if pd.isna(target):
+            return df
+        series_num = pd.to_numeric(series, errors="coerce")
+        if op == "gt":
+            return df[series_num > target]
+        if op == "ge":
+            return df[series_num >= target]
+        if op == "lt":
+            return df[series_num < target]
+        if op == "le":
+            return df[series_num <= target]
+
+    if op == "eq":
+        if not values:
+            return df
+        target = values[0]
+        if pd.api.types.is_numeric_dtype(series):
+            target_num = pd.to_numeric(target, errors="coerce")
+            if pd.isna(target_num):
+                return df
+            series_num = pd.to_numeric(series, errors="coerce")
+            return df[series_num == target_num]
+        series_str = series.astype(str)
+        return df[series_str == str(target)]
+
+    if op == "ne":
+        if not values:
+            return df
+        target = values[0]
+        if pd.api.types.is_numeric_dtype(series):
+            target_num = pd.to_numeric(target, errors="coerce")
+            if pd.isna(target_num):
+                return df
+            series_num = pd.to_numeric(series, errors="coerce")
+            return df[series_num != target_num]
+        series_str = series.astype(str)
+        return df[series_str != str(target)]
+
+    if op == "like":
+        if not values:
+            return df
+        pattern = str(values[0])
+        if not pattern:
+            return df
+        regex = _sql_like_to_regex(pattern)
+        series_str = series.astype(str)
+        return df[series_str.str.contains(regex, regex=True, na=False)]
+
+    return df
 
 
 def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:

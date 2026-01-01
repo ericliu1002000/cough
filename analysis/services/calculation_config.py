@@ -111,7 +111,9 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(rule, dict):
             continue
         field = rule.get("field")
-        values = _listify(rule.get("values"), [])
+        if not field:
+            continue
+        values = _listify(rule.get("values") or rule.get("value"), [])
         node_id = f"filter_{idx}"
         nodes.append(
             {
