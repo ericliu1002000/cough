@@ -403,3 +403,40 @@ def get_table_columns_map(
         table_columns[object_name].append(row["column_name"])
 
     return table_columns
+
+
+def get_table_column_display_map(
+    project_name: Optional[str] = None,
+    include_hidden: bool = False,
+) -> Dict[str, Dict[str, str]]:
+    """读取表->列显示名映射（支持可见性过滤）。"""
+    config = get_business_db_config()
+    project = project_name or config["code"]
+
+    sql = (
+        "SELECT object_name, column_name, display_name "
+        "FROM business_columns "
+        "WHERE project_name = :project "
+    )
+    if not include_hidden:
+        sql += "AND is_visible = 1 "
+
+    engine = get_system_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"project": project}).mappings().all()
+    engine.dispose()
+
+    display_map: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        object_name = row.get("object_name")
+        column_name = row.get("column_name")
+        if not object_name or not column_name:
+            continue
+        display_name = row.get("display_name") or ""
+        if not display_name:
+            continue
+        display_map.setdefault(str(object_name), {})[
+            str(column_name)
+        ] = str(display_name)
+
+    return display_map

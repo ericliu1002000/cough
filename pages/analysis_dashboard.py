@@ -119,6 +119,49 @@ def main() -> None:
         if selected_row.get("description"):
             st.info(f"📝 **备注**: {selected_row['description']}")
 
+        st.markdown("##### 📝 备注")
+        default_note = st.session_state.get("calc_note", "")
+        st.text_area(
+            "分析备注",
+            value=default_note,
+            key="calc_note_input",
+            height=80,
+        )
+
+        if st.button("💾 保存所有配置", key="save_all_config"):
+            row_orders_map = st.session_state.get("pivot_row_orders", {})
+            if not isinstance(row_orders_map, dict):
+                row_orders_map = {}
+            row_fields = st.session_state.get("pivot_index", [])
+            if row_fields:
+                row_orders_map = {
+                    k: list(v) if isinstance(v, (list, tuple, set)) else []
+                    for k, v in row_orders_map.items()
+                    if k in row_fields
+                }
+            else:
+                row_orders_map = {}
+            payload = {
+                "baseline": st.session_state.get("baseline_config", {}),
+                "calc_rules": st.session_state.get("calc_rules", []),
+                "note": st.session_state.get("calc_note_input", ""),
+                "exclusions": st.session_state.get("exclusions", []),
+                "pivot": {
+                    "index": st.session_state.get("pivot_index", []),
+                    "columns": st.session_state.get("pivot_columns", []),
+                    "values": st.session_state.get("pivot_values", []),
+                    "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
+                    "agg_axis": st.session_state.get("pivot_agg_axis", "row"),
+                    "row_order": row_orders_map,
+                    "col_order": st.session_state.get("pivot_col_order", {}),
+                    "uniform_control_group": st.session_state.get(
+                        "uniform_control_group"
+                    ),
+                },
+            }
+            save_calculation_config(selected_row["setup_name"], payload)
+            st.success("配置已保存！")
+
     # --- 1.1 状态管理与初始化 ---
     st.session_state["current_setup_name"] = selected_row["setup_name"]
 
@@ -352,53 +395,6 @@ def main() -> None:
         if st.session_state.get("exclusions"):
             r = st.session_state["exclusions"][0]
             st.info(f"当前剔除: `{r['field']}` NOT IN {r['values']}")
-
-        # ==========================================
-        # [Step D] 备注 & 保存配置
-        # ==========================================
-        st.markdown("##### 📝 备注")
-        default_note = st.session_state.get("calc_note", "")
-        st.text_area(
-            "分析备注",
-            value=default_note,
-            key="calc_note_input",
-            height=80,
-        )
-
-        st.divider()
-        if st.button("💾 保存所有配置"):
-            row_orders_map = st.session_state.get("pivot_row_orders", {})
-            if not isinstance(row_orders_map, dict):
-                row_orders_map = {}
-            row_fields = st.session_state.get("pivot_index", [])
-            if row_fields:
-                row_orders_map = {
-                    k: list(v) if isinstance(v, (list, tuple, set)) else []
-                    for k, v in row_orders_map.items()
-                    if k in row_fields
-                }
-            else:
-                row_orders_map = {}
-            payload = {
-                "baseline": st.session_state.get("baseline_config", {}),
-                "calc_rules": st.session_state.get("calc_rules", []),
-                "note": st.session_state.get("calc_note_input", ""),
-                "exclusions": st.session_state.get("exclusions", []),
-                "pivot": {
-                    "index": st.session_state.get("pivot_index", []),
-                    "columns": st.session_state.get("pivot_columns", []),
-                    "values": st.session_state.get("pivot_values", []),
-                    "agg": st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
-                    "agg_axis": st.session_state.get("pivot_agg_axis", "row"),
-                    "row_order": row_orders_map,
-                    "col_order": st.session_state.get("pivot_col_order", {}),
-                    "uniform_control_group": st.session_state.get(
-                        "uniform_control_group"
-                    ),
-                },
-            }
-            save_calculation_config(selected_row["setup_name"], payload)
-            st.success("配置已保存！")
 
         # =======================================================
         # 【最终执行流水线】Pass 1 -> BDS -> Filter -> Pass 2

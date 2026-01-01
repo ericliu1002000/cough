@@ -25,6 +25,18 @@ from analysis.state.data_builder import add_filter_row, init_filter_rows, remove
 
 # 从环境变量读取可选的最大表数量，默认为 5
 MAX_TABLE_NUMBER = int(os.getenv("MAX_TABLE_NUMBER", "5"))
+SETUP_NAME_SUGGESTION_PLACEHOLDER = "<选择已有配置名称>"
+
+
+def apply_setup_name_suggestion() -> None:
+    """Fill the setup name input from the suggestion dropdown."""
+    suggestion = st.session_state.get("setup_name_suggest") or ""
+    if (
+        suggestion
+        and suggestion != SETUP_NAME_SUGGESTION_PLACEHOLDER
+    ):
+        st.session_state["setup_name_input"] = suggestion
+        st.session_state["setup_name_suggest"] = SETUP_NAME_SUGGESTION_PLACEHOLDER
 
 # ===========================
 # 2. 界面布局 (Streamlit)
@@ -34,7 +46,9 @@ st.set_page_config(page_title="临床数据拼表器", layout="wide")
 hide_login_sidebar_entry()
 require_login()
 log_access("data_builder")
-st.title("🏥 临床试验数据拼表工具")
+current_setup_name = st.session_state.get("current_setup_name")
+title_suffix = f" ({current_setup_name})" if current_setup_name else ""
+st.title(f"🏥 临床试验数据拼表工具{title_suffix}")
 
 meta_data_visible = load_table_metadata(include_hidden=False)
 meta_data_all = load_table_metadata(include_hidden=True)
@@ -44,31 +58,33 @@ all_tables = list(meta_data_visible.keys())
 # filter_rows: 存储筛选条件的列表，每项是一个 dict
 init_filter_rows()
 
+setups = fetch_all_setups()
+setup_names = [row["setup_name"] for row in setups]
+setup_desc_map = {
+    row["setup_name"]: row.get("description") or ""
+    for row in setups
+}
+
 # --- 侧边栏 ---
 with st.sidebar:
     # 配置管理区
     st.header("🧩 分析集配置")
 
-    setups = fetch_all_setups()
-    setup_options = ["<新配置>"]
-    setup_name_to_desc = {}
-    for row in setups:
-        name = row["setup_name"]
-        desc = row.get("description") or ""
-        label = f"{name} - {desc}" if desc else name
-        setup_options.append(label)
-        setup_name_to_desc[label] = name
+    setup_options = ["<新配置>"] + setup_names
 
-    selected_setup_label = st.selectbox(
+    selected_setup_name = st.selectbox(
         "选择已有配置",
         options=setup_options,
         index=0,
     )
+    selected_setup_desc = ""
+    if selected_setup_name != "<新配置>":
+        selected_setup_desc = setup_desc_map.get(selected_setup_name, "")
+        if selected_setup_desc:
+            st.caption(f"备注: {selected_setup_desc}")
 
     # 加载配置按钮
-    if selected_setup_label != "<新配置>":
-        selected_setup_name = setup_name_to_desc[selected_setup_label]
-
+    if selected_setup_name != "<新配置>":
         if st.button("✏️ 加载配置", key="btn_load_setup"):
             cfg_all = fetch_setup_config(selected_setup_name)
             if cfg_all is not None:
@@ -128,6 +144,9 @@ with st.sidebar:
                         if agg.get("alias") is not None:
                             st.session_state[f"agg_alias_{i}"] = agg.get("alias")
 
+                st.session_state["current_setup_name"] = selected_setup_name
+                st.session_state["setup_name_input"] = selected_setup_name
+                st.session_state["description_input"] = selected_setup_desc
                 st.success(f"已加载配置：{selected_setup_name}")
                 st.rerun()
 
@@ -142,14 +161,9 @@ with st.sidebar:
     st.header("⚙️ 全局配置")
     st.info(f"🔗 智能 Join 逻辑已启用。\nKey: {', '.join(SUBJECT_ID_ALIASES)}")
     
-    st.subheader("🚫 受试者黑名单 (Not In)")
-    subject_blocklist = st.text_area(
-        "输入要排除的 ID (一行一个):",
-        height=100,
-        key="subject_blocklist",
-    )
 
 # --- 主界面 ---
+subject_blocklist = ""
 st.subheader("1. 选择要拼接的表 (按 Join 顺序)")
 selected_tables = st.multiselect(
     f"请选择表 (最多 {MAX_TABLE_NUMBER} 张):",
@@ -428,12 +442,39 @@ if st.button("🚀 生成 SQL 并预览数据", type="primary"):
 st.divider()
 st.subheader("4. 保存当前分析集配置")
 
-with st.form("save_setup_form"):
-    setup_name_input = st.text_input("配置名称 (setup_name)*", key="setup_name_input")
-    description_input = st.text_input("备注说明 (可选)", key="description_input")
-    submitted = st.form_submit_button("💾 保存 / 更新配置")
+setup_name_input = st.text_input(
+    "配置名称 (setup_name)*",
+    key="setup_name_input",
+    placeholder="输入名称，匹配到已有配置会更新，否则新建",
+)
+description_input = st.text_input("备注说明 (可选)", key="description_input")
 
-if submitted:
+name_query = (setup_name_input or "").strip()
+if name_query:
+    matched_names = [
+        name for name in setup_names
+        if name_query.lower() in name.lower()
+    ]
+else:
+    matched_names = setup_names
+
+suggestion_options = [SETUP_NAME_SUGGESTION_PLACEHOLDER] + matched_names
+st.selectbox(
+    "已有配置建议",
+    options=suggestion_options,
+    index=0,
+    key="setup_name_suggest",
+    on_change=apply_setup_name_suggestion,
+    help="选择后会自动填入上面的配置名称",
+)
+
+if name_query:
+    if name_query in setup_names:
+        st.info("检测到已有配置，将执行更新。")
+    else:
+        st.caption("未匹配到已有名称，将创建新配置。")
+
+if st.button("💾 保存 / 更新配置"):
     name = (setup_name_input or "").strip()
     if not name:
         st.error("配置名称不能为空。")
@@ -449,4 +490,5 @@ if submitted:
             "max_table_number": MAX_TABLE_NUMBER,
         }
         save_extraction_config(name, description_input or None, extraction_config)
+        st.session_state["current_setup_name"] = name
         st.success(f"配置 `{name}` 已保存 / 更新。")

@@ -26,6 +26,29 @@ def _get_id_column(table_name: str, meta_data: Dict[str, List[str]]) -> str | No
     return None
 
 
+def _resolve_table_name(
+    meta_data: Dict[str, List[str]],
+    table_name: str,
+) -> str | None:
+    """Resolve a table name using case-insensitive matching."""
+    if not table_name:
+        return None
+    for name in meta_data.keys():
+        if str(name).lower() == table_name.lower():
+            return str(name)
+    return None
+
+
+def _resolve_subject_id_column(columns: List[str]) -> str | None:
+    """Resolve subject ID column using case-insensitive aliases."""
+    col_map = {str(col).lower(): str(col) for col in columns}
+    for alias in SUBJECT_ID_ALIASES:
+        match = col_map.get(str(alias).lower())
+        if match:
+            return match
+    return None
+
+
 def query_subject_tables(
     subject_id: Any,
 ) -> Tuple[Dict[str, pd.DataFrame], List[str], List[Dict[str, str]]]:
@@ -151,3 +174,50 @@ def query_table_value_stats(
 
     records = df.to_dict(orient="records")
     return records, None
+
+
+def fetch_subject_id_candidates(
+    query: Optional[str] = None,
+    limit: int = 50,
+    table_name: str = "adsl",
+) -> List[str]:
+    """Return distinct subject IDs from the specified table."""
+    meta = get_table_columns_map(include_hidden=False)
+    if not meta:
+        return []
+
+    actual_table = _resolve_table_name(meta, table_name)
+    if not actual_table:
+        return []
+
+    columns = meta.get(actual_table, [])
+    id_col = _resolve_subject_id_column(columns)
+    if not id_col:
+        return []
+
+    table_sql = _quote_ident(actual_table)
+    col_sql = _quote_ident(id_col)
+    sql = (
+        f"SELECT DISTINCT {col_sql} AS subject_id "
+        f"FROM {table_sql} "
+        f"WHERE {col_sql} IS NOT NULL "
+    )
+    params: Dict[str, object] = {"limit": int(limit)}
+    trimmed = (query or "").strip()
+    if trimmed:
+        sql += f"AND CAST({col_sql} AS CHAR) LIKE :pattern "
+        params["pattern"] = f"%{trimmed}%"
+    sql += f"ORDER BY {col_sql} LIMIT :limit"
+
+    engine = get_business_engine()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+    except Exception as exc:
+        log_exception(
+            "subject_profile.fetch_subject_id_candidates failed",
+            {"table": actual_table, "column": id_col, "query": trimmed},
+        )
+        return []
+
+    return [str(row[0]) for row in rows if row and row[0] is not None]

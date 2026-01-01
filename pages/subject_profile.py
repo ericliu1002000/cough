@@ -10,7 +10,9 @@ from analysis.settings.config import TABLE_DESCRIBE_COLUMN
 from analysis.settings.logging import log_access
 from analysis.exports.subject_profile import to_excel_sections_bytes
 from analysis.views.components.page_utils import hide_login_sidebar_entry
+from db.services.metadata import get_table_column_display_map
 from db.services.subject_profile import (
+    fetch_subject_id_candidates,
     query_subject_tables,
     query_table_value_stats,
 )
@@ -19,6 +21,20 @@ from db.services.subject_profile import (
 st.set_page_config(page_title="受试者档案", layout="wide")
 hide_login_sidebar_entry()
 st.title("🧬 受试者全表档案")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stDataFrame"] th,
+    div[data-testid="stDataFrame"] th div {
+        white-space: normal;
+        line-height: 1.2;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+SUBJECT_ID_SUGGESTION_PLACEHOLDER = "<选择受试者 ID>"
 
 
 def _get_query_param(name: str) -> Optional[str]:
@@ -136,29 +152,63 @@ def _get_value_stats(
     return stats, error
 
 
+@st.cache_data(ttl=300)
+def _fetch_subject_id_options(limit: int = 20000) -> list[str]:
+    return fetch_subject_id_candidates(query="", limit=limit)
+
+
+def _build_display_column_maps(
+    columns: list[str],
+    display_name_map: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    label_map: dict[str, str] = {}
+    reverse_map: dict[str, str] = {}
+    for col in columns:
+        display_name = display_name_map.get(col)
+        label = f"{col} ({display_name})" if display_name else col
+        label_map[col] = label
+        reverse_map[label] = col
+    return label_map, reverse_map
+
+
 def main() -> None:
     """Render the subject profile page."""
     require_login()
     log_access("subject_profile")
+    display_name_map = get_table_column_display_map(include_hidden=False)
     # 1. 确定当前受试者 ID
     query_subject_id = _get_query_param("subject_id")
     if query_subject_id:
         st.session_state["selected_subject_id"] = query_subject_id
-
-    subject_id = st.session_state.get("selected_subject_id")
+        st.session_state["subject_id_select"] = query_subject_id
 
     with st.sidebar:
         st.header("受试者选择")
-        subject_id = st.text_input(
-            "受试者 ID",
-            value=str(subject_id) if subject_id is not None else "",
-            help="可从分析仪表盘点击散点后跳转，也可以在此手动输入。",
-        )
-        if st.button("加载受试者档案"):
-            st.session_state["selected_subject_id"] = subject_id
+        subject_options = _fetch_subject_id_options(limit=20000)
+        current_subject = st.session_state.get("selected_subject_id")
+        if current_subject and current_subject not in subject_options:
+            subject_options = [str(current_subject)] + subject_options
 
+        select_options = [SUBJECT_ID_SUGGESTION_PLACEHOLDER] + subject_options
+        if current_subject and current_subject in select_options:
+            st.session_state["subject_id_select"] = current_subject
+        elif "subject_id_select" not in st.session_state:
+            st.session_state["subject_id_select"] = SUBJECT_ID_SUGGESTION_PLACEHOLDER
+
+        selected_value = st.selectbox(
+            "受试者 ID",
+            options=select_options,
+            key="subject_id_select",
+            help="在下拉框里输入可快速筛选",
+        )
+        if selected_value == SUBJECT_ID_SUGGESTION_PLACEHOLDER:
+            st.session_state.pop("selected_subject_id", None)
+        else:
+            st.session_state["selected_subject_id"] = selected_value
+
+    subject_id = st.session_state.get("selected_subject_id")
     if not subject_id:
-        st.info("请在左侧输入受试者 ID，或从分析仪表盘点击散点后跳转到本页面。")
+        st.info("请在左侧选择受试者 ID，或从分析仪表盘点击散点后跳转到本页面。")
         return
 
     st.markdown(f"### 当前受试者：`{subject_id}`")
@@ -227,15 +277,20 @@ def main() -> None:
             st.subheader(f"表：`{table_name}`  （行数：{len(df)}）")
 
         show_full = False
-        display_df = df
         if len(df) > 10:
             st.caption(f"默认展示前 10 行，共 {len(df)} 行。")
             show_full = st.checkbox(
                 f"显示 `{table_name}` 的全部 {len(df)} 行",
                 key=f"show_full_{table_name}",
             )
-            if not show_full:
-                display_df = df.head(10)
+        display_df = df if show_full or len(df) <= 10 else df.head(10)
+
+        table_display_map = display_name_map.get(table_name, {})
+        label_map, reverse_label_map = _build_display_column_maps(
+            list(display_df.columns),
+            table_display_map,
+        )
+        display_df = display_df.rename(columns=label_map)
 
         data_key = f"table_{table_name}_{'full' if show_full else 'head'}"
         event = st.dataframe(
@@ -250,18 +305,20 @@ def main() -> None:
         row_idx, col_name = _get_dataframe_selection(event, data_key)
         if isinstance(col_name, int) and col_name < len(display_df.columns):
             col_name = display_df.columns[col_name]
-        if col_name and col_name in display_df.columns:
+        display_col = col_name if isinstance(col_name, str) else None
+        actual_col = reverse_label_map.get(display_col, display_col)
+        if actual_col and actual_col in df.columns:
             st.caption(
-                f"当前选择：`{table_name}` / `{col_name}`"
+                f"当前选择：`{table_name}` / `{display_col}`"
             )
 
-            stats, error = _get_value_stats(table_name, col_name)
+            stats, error = _get_value_stats(table_name, actual_col)
             if error:
                 st.warning(f"{error}")
             elif not stats:
                 st.info("该列暂无可统计的数据。")
             else:
-                show_all_key = f"value_stats_show_all::{table_name}::{col_name}"
+                show_all_key = f"value_stats_show_all::{table_name}::{actual_col}"
                 show_all = st.session_state.get(show_all_key, False)
                 display_stats = stats
                 if len(stats) > 50 and not show_all:
@@ -269,7 +326,7 @@ def main() -> None:
                     st.caption("仅展示前 50 个值。")
                     if st.button(
                         "加载更多",
-                        key=f"load_more_{table_name}_{col_name}",
+                        key=f"load_more_{table_name}_{actual_col}",
                     ):
                         show_all = True
                         st.session_state[show_all_key] = True
@@ -287,7 +344,7 @@ def main() -> None:
                 st.selectbox(
                     "value_list",
                     options=options,
-                    key=f"value_list_{table_name}_{col_name}_{int(show_all)}",
+                    key=f"value_list_{table_name}_{actual_col}_{int(show_all)}",
                 )
         
 
