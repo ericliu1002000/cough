@@ -385,9 +385,35 @@ def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     if not isinstance(metrics, list):
         return df
 
+    broadcast = params.get("broadcast", True)
     result = df.copy()
     grouped = df.groupby(group_by, dropna=False) if group_by else None
 
+    if broadcast:
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            col = metric.get("col")
+            func = metric.get("fn") or metric.get("func")
+            if not col or not func or col not in df.columns:
+                continue
+            name = metric.get("name") or f"{func}_{col}"
+            agg_func = _resolve_agg_func(func)
+            if not agg_func:
+                continue
+            try:
+                if grouped is None:
+                    value = agg_func(df[col])
+                    result[name] = value
+                else:
+                    result[name] = grouped[col].transform(agg_func)
+            except Exception as exc:
+                st.warning(f"Aggregate node failed: {exc}")
+                continue
+
+        return result
+
+    aggregations: dict[str, tuple[str, Any]] = {}
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
@@ -399,17 +425,22 @@ def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
         agg_func = _resolve_agg_func(func)
         if not agg_func:
             continue
-        try:
-            if grouped is None:
-                value = agg_func(df[col])
-                result[name] = value
-            else:
-                result[name] = grouped[col].transform(agg_func)
-        except Exception as exc:
-            st.warning(f"Aggregate node failed: {exc}")
-            continue
+        aggregations[name] = (col, agg_func)
 
-    return result
+    if not aggregations:
+        return df
+
+    try:
+        if grouped is None:
+            values = {
+                name: agg_func(df[col])
+                for name, (col, agg_func) in aggregations.items()
+            }
+            return pd.DataFrame([values])
+        return grouped.agg(**aggregations).reset_index()
+    except Exception as exc:
+        st.warning(f"Aggregate node failed: {exc}")
+        return df
 
 
 def run_calculation_graph(df: pd.DataFrame, graph: dict[str, Any]) -> pd.DataFrame:

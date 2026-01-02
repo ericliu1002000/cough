@@ -54,6 +54,15 @@ def agg_mean_atomic(series: pd.Series) -> float:
     return pd.to_numeric(series, errors="coerce").mean()
 
 
+@register_agg_method("exp(几何平均2)")
+def agg_exp(series: pd.Series) -> float:
+    """Return exp of the mean value for a series."""
+    values = pd.to_numeric(series, errors="coerce")
+    if values.dropna().empty:
+        return np.nan
+    return float(np.exp(values.mean()))
+
+
 def compute_trimmed_mean(series: pd.Series, keep_ratio: float) -> float:
     """Return trimmed mean keeping the middle proportion of data."""
     if keep_ratio is None:

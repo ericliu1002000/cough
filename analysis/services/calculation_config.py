@@ -141,6 +141,7 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(rule, dict):
             continue
         group_by = _listify(rule.get("group_by"), [])
+        broadcast = rule.get("broadcast", True)
         metrics = rule.get("metrics", [])
         outputs_cols = []
         input_cols = list(group_by)
@@ -158,6 +159,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                         name = f"{func}_{col}"
                 if name:
                     outputs_cols.append(name)
+        if not broadcast:
+            outputs_cols = list(
+                dict.fromkeys([c for c in group_by if c] + outputs_cols)
+            )
         node_id = f"aggregate_{idx}"
         nodes.append(
             {

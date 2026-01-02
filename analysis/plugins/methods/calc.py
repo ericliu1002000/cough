@@ -84,3 +84,17 @@ def calc_log_ratio(df_subset: pd.DataFrame) -> pd.Series:
     result[valid] = np.log(ratio[valid])
 
     return result
+
+
+@register_calc_method("Log - 自然对数 (ln(Col1))")
+def calc_log(df_subset: pd.DataFrame) -> pd.Series:
+    """Return natural log ln(col1) for positive values only."""
+    if df_subset.shape[1] < 1:
+        return pd.Series(np.nan, index=df_subset.index)
+
+    values = pd.to_numeric(df_subset.iloc[:, 0], errors="coerce")
+    result = pd.Series(np.nan, index=df_subset.index, dtype="float64")
+    valid = values > 0
+    result[valid] = np.log(values[valid])
+
+    return result
