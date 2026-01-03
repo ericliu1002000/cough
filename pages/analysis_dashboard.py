@@ -42,8 +42,6 @@ from setup_catalog.services.analysis_list_setups import (
     save_calculation_config,
 )
 from analysis.services.analysis_service import (
-    apply_baseline_mapping,
-    apply_calculations,
     calculate_anova_table,
     run_analysis,
 )
@@ -175,6 +173,9 @@ def main() -> None:
             calc_cfg,
             default_agg=DEFAULT_PIVOT_AGGS,
         )
+        st.session_state["calc_note_input"] = st.session_state.get(
+            "calc_note", ""
+        )
 
         st.session_state.pop("raw_df", None)
         st.session_state.pop("current_sql", None)
@@ -192,7 +193,7 @@ def main() -> None:
         new_title = selected_row["setup_name"]
         if st.session_state.get("page_title") != new_title:
             st.session_state["page_title"] = new_title
-            st.rerun()
+        st.rerun()
 
     # --- 3. 数据处理流水线 ---
     if "raw_df" in st.session_state:
@@ -216,11 +217,75 @@ def main() -> None:
         st.divider()
 
         # -------------------------------------------------------
-        # 【Pass 1: 预计算】
-        # 先算一遍衍生变量 (如 Total)，为了让基线配置能选到它们
+        # 【DAG 预览】
+        # 每次根据当前配置从 Raw 计算最终预览
         # -------------------------------------------------------
-        df_pass1 = apply_calculations(raw_df, st.session_state["calc_rules"])
-        all_cols_pass1 = list(df_pass1.columns)
+        options_graph = build_calculation_payload(
+            st.session_state,
+            default_agg=DEFAULT_PIVOT_AGGS,
+        ).get("graph", {})
+        preview_df = run_calculation_graph(raw_df, options_graph)
+        available_cols = list(preview_df.columns)
+
+        def _extract_rule_order(value: Any) -> int | None:
+            """Return integer order values when present."""
+            if isinstance(value, bool):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _count_existing_nodes(state: dict[str, Any]) -> int:
+            """Estimate existing node count for order assignment."""
+            count = 0
+            baseline_cfg = state.get("baseline_config", {})
+            if isinstance(baseline_cfg, dict):
+                targets = baseline_cfg.get("target_cols", [])
+                if isinstance(targets, (list, tuple, set)):
+                    count += len([t for t in targets if t])
+                elif targets:
+                    count += 1
+            for key in ("calc_rules", "exclusions", "aggregations"):
+                items = state.get(key, [])
+                if isinstance(items, list):
+                    count += len(items)
+            return count
+
+        def _collect_order_values(state: dict[str, Any]) -> list[int]:
+            """Collect existing order values for sequencing."""
+            orders: list[int] = []
+            baseline_cfg = state.get("baseline_config", {})
+            if isinstance(baseline_cfg, dict):
+                order_map = baseline_cfg.get("order_map", {})
+                if isinstance(order_map, dict):
+                    for val in order_map.values():
+                        order_val = _extract_rule_order(val)
+                        if order_val is not None:
+                            orders.append(order_val)
+            for key in ("calc_rules", "exclusions", "aggregations"):
+                items = state.get(key, [])
+                if not isinstance(items, list):
+                    continue
+                for rule in items:
+                    if not isinstance(rule, dict):
+                        continue
+                    order_val = _extract_rule_order(rule.get("order"))
+                    if order_val is not None:
+                        orders.append(order_val)
+            seed = _extract_rule_order(state.get("order_seed"))
+            if seed is not None:
+                orders.append(seed)
+            return orders
+
+        def next_rule_order(state: dict[str, Any]) -> int:
+            """Return the next sequence value for rule ordering."""
+            orders = _collect_order_values(state)
+            max_order = max(orders) if orders else 0
+            estimated = _count_existing_nodes(state)
+            next_val = max(max_order, estimated) + 1
+            state["order_seed"] = next_val
+            return next_val
 
         # ==========================================
         # [Step A] 基线变量映射 (BDS Engine)
@@ -233,17 +298,17 @@ def main() -> None:
         with st.expander("⚙️ 配置基线逻辑", expanded=not bool(bl_cfg)):
             c1, c2, c3 = st.columns(3)
             # 智能猜测
-            def_subj_idx = next((i for i, c in enumerate(all_cols_pass1) if "SUBJ" in c.upper()), 0)
-            def_visit_idx = next((i for i, c in enumerate(all_cols_pass1) if "VISIT" in c.upper() or "AVISIT" in c.upper()), 0)
+            def_subj_idx = next((i for i, c in enumerate(available_cols) if "SUBJ" in c.upper()), 0)
+            def_visit_idx = next((i for i, c in enumerate(available_cols) if "VISIT" in c.upper() or "AVISIT" in c.upper()), 0)
 
             with c1:
-                subj_col = st.selectbox("受试者 ID 列", all_cols_pass1, index=def_subj_idx, key="bl_subj_ui")
+                subj_col = st.selectbox("受试者 ID 列", available_cols, index=def_subj_idx, key="bl_subj_ui")
             with c2:
-                visit_col = st.selectbox("访视/时间点列", all_cols_pass1, index=def_visit_idx, key="bl_visit_ui")
+                visit_col = st.selectbox("访视/时间点列", available_cols, index=def_visit_idx, key="bl_visit_ui")
             
             # 动态获取访视列表
-            if visit_col and visit_col in df_pass1.columns:
-                unique_visits = sorted(df_pass1[visit_col].dropna().astype(str).unique().tolist())
+            if visit_col and visit_col in preview_df.columns:
+                unique_visits = sorted(preview_df[visit_col].dropna().astype(str).unique().tolist())
             else:
                 unique_visits = []
                 
@@ -257,8 +322,8 @@ def main() -> None:
             
             target_cols = st.multiselect(
                 "选择数值变量 (生成 _BL 列)", 
-                options=all_cols_pass1,
-                default=[c for c in bl_cfg.get("target_cols", []) if c in all_cols_pass1],
+                options=available_cols,
+                default=[c for c in bl_cfg.get("target_cols", []) if c in available_cols],
                 key="bl_targets_ui"
             )
             
@@ -267,6 +332,15 @@ def main() -> None:
                 old_targets = set(old_cfg.get("target_cols", []) or [])
                 new_targets = set(target_cols)
                 removed_targets = sorted(old_targets - new_targets)
+                old_order_map = old_cfg.get("order_map", {})
+                if not isinstance(old_order_map, dict):
+                    old_order_map = {}
+                order_map: dict[str, int] = {}
+                for target in target_cols:
+                    if target in old_order_map:
+                        order_map[target] = old_order_map[target]
+                    else:
+                        order_map[target] = next_rule_order(st.session_state)
 
                 calc_payload = build_calculation_payload(
                     st.session_state,
@@ -286,6 +360,7 @@ def main() -> None:
                     "visit_col": visit_col,
                     "baseline_val": baseline_val,
                     "target_cols": target_cols,
+                    "order_map": order_map,
                 }
                 apply_calculation_config(
                     st.session_state,
@@ -321,61 +396,8 @@ def main() -> None:
             group_part = "_".join([str(v) for v in group_by if v]) or "all"
             return f"{func_name}_{col}_by_{group_part}"
 
-        def collect_agg_outputs(rules: list[dict[str, Any]]) -> list[str]:
-            """Collect aggregation output names for column selection."""
-            outputs: list[str] = []
-            for rule in rules:
-                if not isinstance(rule, dict):
-                    continue
-                group_by = rule.get("group_by", [])
-                if not isinstance(group_by, list):
-                    group_by = [group_by] if group_by else []
-                metrics = rule.get("metrics", [])
-                if not isinstance(metrics, list):
-                    continue
-                for metric in metrics:
-                    if not isinstance(metric, dict):
-                        continue
-                    name = metric.get("name")
-                    if not name:
-                        name = build_default_agg_name(
-                            group_by,
-                            metric.get("col"),
-                            metric.get("fn") or metric.get("func"),
-                        )
-                    if name:
-                        outputs.append(name)
-            return outputs
-
-        def collect_graph_output_cols(graph: dict[str, Any]) -> list[str]:
-            """Collect output columns declared in the DAG."""
-            outputs: list[str] = []
-            nodes = graph.get("nodes", [])
-            if not isinstance(nodes, list):
-                return outputs
-            for node in nodes:
-                for col in node.get("outputs_cols", []) or []:
-                    if col and col != "*":
-                        outputs.append(str(col))
-            return outputs
-
-        # 模拟基线映射以获取列名
-        df_preview_bl = apply_baseline_mapping(df_pass1, st.session_state.get("baseline_config", {}))
-        agg_outputs = collect_agg_outputs(st.session_state.get("aggregations", []))
-        calc_payload_for_cols = build_calculation_payload(
-            st.session_state,
-            default_agg=DEFAULT_PIVOT_AGGS,
-        )
-        graph_output_cols = collect_graph_output_cols(
-            calc_payload_for_cols.get("graph", {})
-        )
-        agg_input_cols = list(
-            dict.fromkeys(list(raw_df.columns) + graph_output_cols + agg_outputs)
-        )
-        current_cols = list(df_preview_bl.columns)
-        current_cols.extend([r.get("name") for r in st.session_state["calc_rules"] if r.get("name")])
-        current_cols.extend(agg_outputs)
-        current_cols = list(dict.fromkeys([c for c in current_cols if c]))
+        agg_input_cols = list(available_cols)
+        current_cols = list(available_cols)
         
         with st.expander("➕ 添加新计算规则", expanded=True):
             c1, c2, c3, c4 = st.columns([2, 3, 2, 1])
@@ -390,7 +412,10 @@ def main() -> None:
                 if st.button("添加"):
                     if new_name and targets_sel:
                         st.session_state["calc_rules"].append({
-                            "name": new_name, "cols": targets_sel, "method": method
+                            "name": new_name,
+                            "cols": targets_sel,
+                            "method": method,
+                            "order": next_rule_order(st.session_state),
                         })
                         st.rerun()
 
@@ -424,7 +449,7 @@ def main() -> None:
         # ==========================================
         st.divider()
         st.markdown("##### 🗑️ 数据剔除规则")
-        st.caption("多条规则之间为 AND 关系。")
+        st.caption("多条规则逐条剔除。")
 
         def normalize_exclusion_op(op: Any) -> str:
             """Normalize exclusion operators for UI."""
@@ -478,131 +503,109 @@ def main() -> None:
         if not isinstance(exclusions, list):
             exclusions = []
 
-        with st.expander("配置剔除条件", expanded=True):
-            new_rules: list[dict[str, Any]] = []
-            delete_idx: int | None = None
+        with st.expander("➕ 添加剔除规则", expanded=True):
+            c1, c2, c3, c4 = st.columns([2, 2, 5, 1])
 
-            if not exclusions:
-                st.caption("暂无剔除条件。")
+            field_options = current_cols if current_cols else ["(无可用字段)"]
+            field_disabled = not current_cols
 
-            for i, rule in enumerate(exclusions):
-                rule = dict(rule or {})
-                rule_op = normalize_exclusion_op(rule.get("op", "not_in"))
-                rule_values = rule.get("values", [])
-                if not isinstance(rule_values, list):
-                    rule_values = [rule_values] if rule_values is not None else []
+            with c1:
+                selected_field = st.selectbox(
+                    "字段名",
+                    field_options,
+                    index=0,
+                    key="ex_field_new",
+                    disabled=field_disabled,
+                )
+            if field_disabled:
+                selected_field = None
 
-                c1, c2, c3, c4 = st.columns([2, 2, 5, 1])
+            with c2:
+                selected_label = st.selectbox(
+                    "条件",
+                    [lbl for lbl, _ in op_choices],
+                    index=3,
+                    key="ex_op_new",
+                )
+            selected_op = op_by_label.get(selected_label, "not_in")
 
-                field_options = current_cols if current_cols else ["(无可用字段)"]
-                field_disabled = not current_cols
-                field = rule.get("field")
-                try:
-                    field_idx = field_options.index(field) if field in field_options else 0
-                except ValueError:
-                    field_idx = 0
-
-                with c1:
-                    selected_field = st.selectbox(
-                        "字段名",
-                        field_options,
-                        index=field_idx,
-                        key=f"ex_field_{i}",
-                        disabled=field_disabled,
-                    )
-                if field_disabled:
-                    selected_field = None
-
-                label = label_by_op.get(rule_op, "not in")
-                try:
-                    op_idx = [lbl for lbl, _ in op_choices].index(label)
-                except ValueError:
-                    op_idx = 1
-
-                with c2:
-                    selected_label = st.selectbox(
-                        "条件",
-                        [lbl for lbl, _ in op_choices],
-                        index=op_idx,
-                        key=f"ex_op_{i}",
-                    )
-                selected_op = op_by_label.get(selected_label, "not_in")
-
-                values: list[Any] = []
-                with c3:
-                    if selected_op in {"in", "not_in"}:
-                        if selected_field and selected_field in df_preview_bl.columns:
-                            u_vals = (
-                                df_preview_bl[selected_field]
-                                .astype(str)
-                                .unique()
-                                .tolist()[:200]
-                            )
-                        else:
-                            u_vals = []
-                        default_vals = [
-                            str(v)
-                            for v in rule_values
-                            if str(v) in u_vals
-                        ]
-                        values = st.multiselect(
-                            "值",
-                            u_vals,
-                            default=default_vals,
-                            key=f"ex_vals_{i}",
+            values: list[Any] = []
+            with c3:
+                if selected_op in {"in", "not_in"}:
+                    if selected_field and selected_field in preview_df.columns:
+                        u_vals = (
+                            preview_df[selected_field]
+                            .astype(str)
+                            .unique()
+                            .tolist()[:200]
                         )
-                    elif selected_op in {"gt", "ge", "lt", "le", "eq", "ne"}:
-                        default_val = str(rule_values[0]) if rule_values else ""
-                        val = st.text_input(
-                            "值",
-                            value=default_val,
-                            placeholder="例如 10",
-                            key=f"ex_value_{i}",
-                        )
-                        values = [val] if val != "" else []
-                    elif selected_op == "like":
-                        default_val = str(rule_values[0]) if rule_values else ""
-                        val = st.text_input(
-                            "模式",
-                            value=default_val,
-                            placeholder="例如 %abc%",
-                            key=f"ex_value_{i}",
-                        )
-                        values = [val] if val != "" else []
                     else:
-                        st.caption("无需填写值")
-                        values = []
+                        u_vals = []
+                    values = st.multiselect(
+                        "值",
+                        u_vals,
+                        key="ex_vals_new",
+                    )
+                elif selected_op in {"gt", "ge", "lt", "le", "eq", "ne"}:
+                    val = st.text_input(
+                        "值",
+                        value="",
+                        placeholder="例如 10",
+                        key="ex_value_new",
+                    )
+                    values = [val] if val != "" else []
+                elif selected_op == "like":
+                    val = st.text_input(
+                        "模式",
+                        value="",
+                        placeholder="例如 %abc%",
+                        key="ex_pattern_new",
+                    )
+                    values = [val] if val != "" else []
+                else:
+                    st.caption("无需填写值")
+                    values = []
 
-                with c4:
-                    if st.button("🗑️", key=f"ex_del_{i}"):
-                        delete_idx = i
+            needs_value_ops = {"in", "not_in", "gt", "ge", "lt", "le", "eq", "ne", "like"}
+            with c4:
+                if st.button("添加", key="ex_add_rule"):
+                    if not selected_field:
+                        st.warning("请选择字段名。")
+                    elif selected_op in needs_value_ops and not values:
+                        st.warning("请填写剔除值。")
+                    else:
+                        exclusions.append(
+                            {
+                                "field": selected_field,
+                                "op": selected_op,
+                                "values": values,
+                                "order": next_rule_order(st.session_state),
+                            }
+                        )
+                        st.session_state["exclusions"] = exclusions
+                        st.rerun()
 
-                new_rules.append(
-                    {
-                        "field": selected_field,
-                        "op": selected_op,
-                        "values": values,
-                    }
-                )
-
-            if st.button("➕ 添加条件", key="ex_add_rule"):
-                exclusions.append(
-                    {
-                        "field": current_cols[0] if current_cols else None,
-                        "op": "not_in",
-                        "values": [],
-                    }
-                )
-                st.session_state["exclusions"] = exclusions
-                st.rerun()
-
-            if delete_idx is not None:
-                st.session_state["exclusions"] = [
-                    rule for idx, rule in enumerate(new_rules) if idx != delete_idx
-                ]
-                st.rerun()
-
-            st.session_state["exclusions"] = new_rules
+        if exclusions:
+            for i, rule in enumerate(exclusions):
+                field = rule.get("field")
+                op = normalize_exclusion_op(rule.get("op", "not_in"))
+                values = rule.get("values", [])
+                if not field:
+                    continue
+                label = label_by_op.get(op, op)
+                if op in {"is_null", "is_not_null"}:
+                    summary = f"`{field}` {label}"
+                else:
+                    summary = f"`{field}` {label} {values}"
+                c1, c2 = st.columns([8, 1])
+                c1.markdown(f"**Step {i+1}:** {summary}")
+                if c2.button("🗑️", key=f"ex_del_{i}"):
+                    st.session_state["exclusions"] = [
+                        r for idx, r in enumerate(exclusions) if idx != i
+                    ]
+                    st.rerun()
+        else:
+            st.caption("暂无剔除条件。")
 
         if st.session_state.get("exclusions"):
             summaries = []
@@ -649,8 +652,11 @@ def main() -> None:
                     key="agg_group_new",
                 )
                 if global_label in group_sel:
-                    group_sel = []
-                else:
+                    if len(group_sel) > 1:
+                        group_sel = [c for c in group_sel if c != global_label]
+                    else:
+                        group_sel = []
+                if group_sel:
                     group_sel = [c for c in group_sel if c in agg_input_cols]
 
             with c2:
@@ -710,6 +716,7 @@ def main() -> None:
                             }
                         ],
                         "broadcast": mode_sel == "广播",
+                        "order": next_rule_order(st.session_state),
                     }
                     st.session_state["aggregations"] = aggregations + [new_rule]
                     st.rerun()
@@ -741,13 +748,14 @@ def main() -> None:
         # =======================================================
         # 【最终执行流水线】基于 DAG 的统一执行
         # =======================================================
-        calc_payload = build_calculation_payload(
+        final_payload = build_calculation_payload(
             st.session_state,
             default_agg=DEFAULT_PIVOT_AGGS,
         )
+        graph = final_payload.get("graph", {})
+        final_df = run_calculation_graph(raw_df, graph)
 
         with st.expander("🧭 DAG 依赖图", expanded=False):
-            graph = calc_payload.get("graph", {})
             dot = build_graphviz_dot(graph)
             chart_col, _ = st.columns([1, 2])
             try:
@@ -762,8 +770,6 @@ def main() -> None:
                 st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
             else:
                 st.info("暂无 DAG 节点。")
-
-        final_df = run_calculation_graph(raw_df, calc_payload.get("graph", {}))
 
         # ==========================================
         # [Step E] 透视分析 & 统计检验 & 绘图

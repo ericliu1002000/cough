@@ -98,3 +98,28 @@ def calc_log(df_subset: pd.DataFrame) -> pd.Series:
     result[valid] = np.log(values[valid])
 
     return result
+
+
+@register_calc_method("Log+ - 对数增强(0->最小正值,负值警告)")
+def calc_log_safe(df_subset: pd.DataFrame) -> pd.Series:
+    """Return log with zeros replaced by min positive value; warn on negatives."""
+    if df_subset.shape[1] < 1:
+        return pd.Series(np.nan, index=df_subset.index)
+
+    values = pd.to_numeric(df_subset.iloc[:, 0], errors="coerce")
+    if (values < 0).any():
+        return pd.Series("warning，负值不适合对数", index=df_subset.index, dtype="object")
+
+    positive_values = values[values > 0]
+    if positive_values.empty:
+        return pd.Series(np.nan, index=df_subset.index, dtype="float64")
+
+    min_positive = positive_values.min()
+    adjusted = values.copy()
+    adjusted[adjusted == 0] = min_positive
+
+    result = pd.Series(np.nan, index=df_subset.index, dtype="float64")
+    valid = adjusted > 0
+    result[valid] = np.log(adjusted[valid])
+
+    return result

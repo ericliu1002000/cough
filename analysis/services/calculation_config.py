@@ -31,6 +31,22 @@ def _listify(value: Any, default: list[str] | None = None) -> list[Any]:
     return [value]
 
 
+def _extract_order(value: Any) -> int | None:
+    """Return an integer order when possible."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_order(value: Any, default: int) -> int:
+    """Normalize order values for stable DAG execution."""
+    extracted = _extract_order(value)
+    return extracted if extracted is not None else default
+
+
 def _normalize_dict_of_lists(value: Any) -> dict[str, list[str]]:
     """Normalize dict values into string lists."""
     if not isinstance(value, dict):
@@ -44,9 +60,37 @@ def _normalize_dict_of_lists(value: Any) -> dict[str, list[str]]:
     return normalized
 
 
+def _max_order_from_cfg(calc_cfg: dict[str, Any]) -> int:
+    """Return the maximum order value found in a calculation config."""
+    orders: list[int] = []
+    baseline_cfg = calc_cfg.get("baseline", {})
+    if isinstance(baseline_cfg, dict):
+        order_map = baseline_cfg.get("order_map", {})
+        if isinstance(order_map, dict):
+            for val in order_map.values():
+                order_val = _extract_order(val)
+                if order_val is not None:
+                    orders.append(order_val)
+    for key in ("calc_rules", "exclusions", "aggregations", "aggregate_rules"):
+        items = calc_cfg.get(key, [])
+        if not isinstance(items, list):
+            continue
+        for rule in items:
+            if not isinstance(rule, dict):
+                continue
+            order_val = _extract_order(rule.get("order"))
+            if order_val is not None:
+                orders.append(order_val)
+    seed_val = _extract_order(calc_cfg.get("order_seed"))
+    if seed_val is not None:
+        orders.append(seed_val)
+    return max(orders) if orders else 0
+
+
 def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
     """Build a DAG schema from legacy calculation config."""
     nodes: list[dict[str, Any]] = []
+    seq = 0
     nodes.append(
         {
             "id": GRAPH_ROOT_ID,
@@ -55,19 +99,25 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
             "inputs_cols": [],
             "outputs_cols": [OUTPUT_ALL_COLUMNS],
             "params": {},
+            "order": seq,
         }
     )
+    seq += 1
     baseline_cfg = calc_cfg.get("baseline", {})
     if isinstance(baseline_cfg, dict):
         subj_col = baseline_cfg.get("subj_col")
         visit_col = baseline_cfg.get("visit_col")
         baseline_val = baseline_cfg.get("baseline_val")
         target_cols = _listify(baseline_cfg.get("target_cols"), [])
+        order_map = baseline_cfg.get("order_map", {})
+        if not isinstance(order_map, dict):
+            order_map = {}
         for idx, target in enumerate(target_cols, start=1):
             if not target:
                 continue
             node_id = f"baseline_{idx}"
             inputs_cols = [c for c in (subj_col, visit_col, target) if c]
+            order = _normalize_order(order_map.get(target), seq)
             nodes.append(
                 {
                     "id": node_id,
@@ -81,8 +131,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                         "baseline_val": baseline_val,
                         "target_col": target,
                     },
+                    "order": order,
                 }
             )
+            seq += 1
 
     calc_rules = calc_cfg.get("calc_rules", [])
     if not isinstance(calc_rules, list):
@@ -93,6 +145,7 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
         node_id = f"derive_{idx}"
         inputs_cols = _listify(rule.get("cols"), [])
         outputs_cols = [rule.get("name")] if rule.get("name") else []
+        order = _normalize_order(rule.get("order"), seq)
         nodes.append(
             {
                 "id": node_id,
@@ -101,8 +154,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                 "inputs_cols": inputs_cols,
                 "outputs_cols": outputs_cols,
                 "params": dict(rule),
+                "order": order,
             }
         )
+        seq += 1
 
     exclusions = calc_cfg.get("exclusions", [])
     if not isinstance(exclusions, list):
@@ -115,6 +170,7 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
             continue
         values = _listify(rule.get("values") or rule.get("value"), [])
         node_id = f"filter_{idx}"
+        order = _normalize_order(rule.get("order"), seq)
         nodes.append(
             {
                 "id": node_id,
@@ -127,8 +183,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                     "values": values,
                     "op": rule.get("op", "not_in"),
                 },
+                "order": order,
             }
         )
+        seq += 1
 
     agg_rules = (
         calc_cfg.get("aggregations")
@@ -159,11 +217,9 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                         name = f"{func}_{col}"
                 if name:
                     outputs_cols.append(name)
-        if not broadcast:
-            outputs_cols = list(
-                dict.fromkeys([c for c in group_by if c] + outputs_cols)
-            )
+        outputs_cols = list(dict.fromkeys([c for c in outputs_cols if c]))
         node_id = f"aggregate_{idx}"
+        order = _normalize_order(rule.get("order"), seq)
         nodes.append(
             {
                 "id": node_id,
@@ -172,8 +228,10 @@ def build_graph_from_legacy(calc_cfg: dict[str, Any]) -> dict[str, Any]:
                 "inputs_cols": input_cols,
                 "outputs_cols": outputs_cols,
                 "params": dict(rule),
+                "order": order,
             }
         )
+        seq += 1
 
     node_order = {node["id"]: idx for idx, node in enumerate(nodes)}
     output_to_node: dict[str, str] = {}
@@ -393,7 +451,9 @@ def build_calculation_payload(
         "calc_rules": state.get("calc_rules", []),
         "note": note,
         "exclusions": state.get("exclusions", []),
+        "exclusion_semantics": state.get("exclusion_semantics", "exclude"),
         "aggregations": state.get("aggregations", []),
+        "order_seed": state.get("order_seed"),
         "pivot": {
             "index": _listify(state.get("pivot_index"), []),
             "columns": _listify(state.get("pivot_columns"), []),
@@ -419,7 +479,12 @@ def apply_calculation_config(
     calc_cfg = ensure_calc_graph(normalize_calc_config(raw_cfg))
     state["calc_rules"] = calc_cfg.get("calc_rules", [])
     state["calc_note"] = calc_cfg.get("note", "")
-    state["exclusions"] = calc_cfg.get("exclusions", [])
+    exclusions = calc_cfg.get("exclusions", [])
+    if not isinstance(exclusions, list):
+        exclusions = []
+    semantics = calc_cfg.get("exclusion_semantics") or "exclude"
+    state["exclusion_semantics"] = semantics
+    state["exclusions"] = exclusions
     state["aggregations"] = (
         calc_cfg.get("aggregations")
         or calc_cfg.get("aggregate_rules")
@@ -428,6 +493,10 @@ def apply_calculation_config(
     state["pivot_config"] = calc_cfg.get("pivot", {})
     state["baseline_config"] = calc_cfg.get("baseline", {})
     state["calc_graph"] = calc_cfg.get("graph", {})
+    seed = _extract_order(calc_cfg.get("order_seed"))
+    if seed is None:
+        seed = _max_order_from_cfg(calc_cfg)
+    state["order_seed"] = seed
 
     p_cfg = state["pivot_config"]
     if not isinstance(p_cfg, dict):

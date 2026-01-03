@@ -77,7 +77,7 @@ def test_run_analysis_returns_empty_when_sql_missing(monkeypatch) -> None:
     """Ensure run_analysis returns empty results when SQL cannot be built."""
     import analysis.services.analysis_service as svc
 
-    monkeypatch.setattr(svc, "load_table_metadata", lambda: {"t": []})
+    monkeypatch.setattr(svc, "load_table_metadata", lambda **kwargs: {"t": []})
     monkeypatch.setattr(svc, "build_sql", lambda **kwargs: None)
 
     captured = {}
@@ -105,7 +105,9 @@ def test_run_analysis_executes_query(monkeypatch) -> None:
         captured.update(kwargs)
         return "SELECT 1"
 
-    monkeypatch.setattr(svc, "load_table_metadata", lambda: {"t": ["id"]})
+    monkeypatch.setattr(
+        svc, "load_table_metadata", lambda **kwargs: {"t": ["id"]}
+    )
     monkeypatch.setattr(svc, "build_sql", fake_build_sql)
 
     class DummyConn:

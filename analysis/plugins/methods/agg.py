@@ -31,37 +31,6 @@ def sas_quantile(data: pd.Series, q: float) -> float:
     idx = int(np.ceil(target))
     return vals[idx - 1]
 
-@register_agg_method("Count - 计数")
-def agg_count(series: pd.Series) -> int:
-    """Return non-missing count for a series."""
-    return series.count()
-
-@register_agg_method("N")
-def agg_n(series: pd.Series) -> int:
-    """Return non-missing count for a series."""
-    return pd.to_numeric(series, errors="coerce").count()
-
-
-@register_agg_method("Missing - 缺失值数")
-def agg_missing(series: pd.Series) -> int:
-    """Return missing count for a series."""
-    return pd.to_numeric(series, errors="coerce").isna().sum()
-
-
-@register_agg_method("Mean - 平均值")
-def agg_mean_atomic(series: pd.Series) -> float:
-    """Return arithmetic mean for a series."""
-    return pd.to_numeric(series, errors="coerce").mean()
-
-
-@register_agg_method("exp(几何平均2)")
-def agg_exp(series: pd.Series) -> float:
-    """Return exp of the mean value for a series."""
-    values = pd.to_numeric(series, errors="coerce")
-    if values.dropna().empty:
-        return np.nan
-    return float(np.exp(values.mean()))
-
 
 def compute_trimmed_mean(series: pd.Series, keep_ratio: float) -> float:
     """Return trimmed mean keeping the middle proportion of data."""
@@ -88,28 +57,33 @@ def compute_trimmed_mean(series: pd.Series, keep_ratio: float) -> float:
     return float(trimmed.mean())
 
 
-@register_agg_method("SD - 标准差")
-def agg_sd_atomic(series: pd.Series) -> float:
-    """Return sample standard deviation using ddof=1."""
-    return pd.to_numeric(series, errors="coerce").std(ddof=1)
+@register_agg_method("N")
+def agg_n(series: pd.Series) -> int:
+    """Return non-missing count for a series."""
+    return pd.to_numeric(series, errors="coerce").count()
 
 
-@register_agg_method("SEM - 标准误")
-def agg_se_atomic(series: pd.Series) -> float:
-    """Return standard error of mean for a series."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
-        return np.nan
-    return s.std(ddof=1) / np.sqrt(len(s))
+@register_agg_method("Count - 计数")
+def agg_count(series: pd.Series) -> int:
+    """Return total count for a series."""
+    return series.count()
 
 
-@register_agg_method("Variance-方差")
-def agg_variance_atomic(series: pd.Series) -> float:
-    """Return sample variance using ddof=1."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
-        return np.nan
-    return s.var(ddof=1)
+@register_agg_method("Do Nothing - 第一个值")
+def agg_do_nothing(series: pd.Series) -> int:
+    return series.iloc[0]
+
+
+@register_agg_method("Missing - 缺失值数")
+def agg_missing(series: pd.Series) -> int:
+    """Return missing count for a series."""
+    return pd.to_numeric(series, errors="coerce").isna().sum()
+
+
+@register_agg_method("Mean - 平均值")
+def agg_mean_atomic(series: pd.Series) -> float:
+    """Return arithmetic mean for a series."""
+    return pd.to_numeric(series, errors="coerce").mean()
 
 
 @register_agg_method("Median - 中位数")
@@ -142,28 +116,28 @@ def agg_max_atomic(series: pd.Series) -> float:
     return pd.to_numeric(series, errors="coerce").max()
 
 
-@register_agg_method("GeoMean - 几何均值")
-def agg_geo_mean(series: pd.Series) -> float:
-    """Return geometric mean for positive values."""
+@register_agg_method("SD - 标准差")
+def agg_sd_atomic(series: pd.Series) -> float:
+    """Return sample standard deviation using ddof=1."""
+    return pd.to_numeric(series, errors="coerce").std(ddof=1)
+
+
+@register_agg_method("SEM - 标准误")
+def agg_se_atomic(series: pd.Series) -> float:
+    """Return standard error of mean for a series."""
     s = pd.to_numeric(series, errors="coerce").dropna()
-    s = s[s > 0]
     if s.empty:
         return np.nan
-    return np.exp(np.log(s).mean())
+    return s.std(ddof=1) / np.sqrt(len(s))
 
 
-
-
-@register_agg_method("GSD - 几何标准差")
-def agg_gsd(series: pd.Series) -> float:
-    """Return geometric standard deviation using log scale."""
+@register_agg_method("Variance-方差")
+def agg_variance_atomic(series: pd.Series) -> float:
+    """Return sample variance using ddof=1."""
     s = pd.to_numeric(series, errors="coerce").dropna()
-    s = s[s > 0]
     if s.empty:
         return np.nan
-    log_vals = np.log(s)
-    sd_log = log_vals.std(ddof=1)
-    return float(np.exp(sd_log))
+    return s.var(ddof=1)
 
 
 @register_agg_method("CV% - 变异系数")
@@ -179,19 +153,6 @@ def agg_cv_percent(series: pd.Series) -> float:
     return (std_val / mean_val) * 100.0
 
 
-@register_agg_method("GCV% - 几何变异系数")
-def agg_gcv_percent(series: pd.Series) -> float:
-    """Return geometric coefficient of variation percentage."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    s = s[s > 0]
-    if s.empty:
-        return np.nan
-    log_vals = np.log(s)
-    sd_log = log_vals.std(ddof=1)
-    var_log = sd_log**2
-    return np.sqrt(np.exp(var_log) - 1.0) * 100.0
-
-
 @register_agg_method(" n (Missing) - 例数(缺失)")
 def agg_fmt_n_missing(series: pd.Series) -> str:
     """Return formatted count and missing text (e.g., 47(0))."""
@@ -204,49 +165,42 @@ def agg_fmt_n_missing(series: pd.Series) -> str:
 @register_agg_method(" Mean (SD) - 均值(标准差)")
 def agg_fmt_mean_sd(series: pd.Series) -> str:
     """Return formatted mean and SD (e.g., 10.859(3.139))."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
+    mean_val = agg_mean_atomic(series)
+    sd = agg_sd_atomic(series)
+    if pd.isna(mean_val) or pd.isna(sd):
         return "NaN"
-    mean_val = s.mean()
-    sd = s.std(ddof=1)
     return f"{mean_val:.3f}({sd:.3f})"
 
 
 @register_agg_method(" Mean (SE) - 均值(标准误)")
 def agg_fmt_mean_se(series: pd.Series) -> str:
     """Return formatted mean and SE (e.g., 10.859(0.458))."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
+    mean_val = agg_mean_atomic(series)
+    se = agg_se_atomic(series)
+    if pd.isna(mean_val) or pd.isna(se):
         return "NaN"
-    mean_val = s.mean()
-    se = s.std(ddof=1) / np.sqrt(len(s))
     return f"{mean_val:.3f}({se:.3f})"
-
-
-
 
 
 @register_agg_method(" Min, Max - 范围")
 def agg_fmt_min_max(series: pd.Series) -> str:
     """Return formatted min/max range (e.g., 3.536, 16.714)."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty:
+    min_val = agg_min_atomic(series)
+    max_val = agg_max_atomic(series)
+    if pd.isna(min_val) or pd.isna(max_val):
         return "NaN"
-    return f"{s.min():.3f}, {s.max():.3f}"
+    return f"{min_val:.3f}, {max_val:.3f}"
 
 
 @register_agg_method("Median (Q1, Q3) - 中位数(四分位)")
 def agg_fmt_median_q1q3(series: pd.Series) -> str:
     """Return formatted median with quartiles (e.g., 11.143(8.179, 12.857))."""
-    try:
-        med = sas_quantile(series, 0.5)
-        q1 = sas_quantile(series, 0.25)
-        q3 = sas_quantile(series, 0.75)
-        if pd.isna(med):
-            return "NaN"
-        return f"{med:.3f}({q1:.3f}, {q3:.3f})"
-    except Exception:
-        return "Error"
+    med = agg_median_atomic(series)
+    q1 = agg_q1_atomic(series)
+    q3 = agg_q3_atomic(series)
+    if pd.isna(med) or pd.isna(q1) or pd.isna(q3):
+        return "NaN"
+    return f"{med:.3f}({q1:.3f}, {q3:.3f})"
 
 
 @register_agg_method("全量指标统计")
@@ -270,3 +224,166 @@ def agg_fmt_all(series: pd.Series) -> str:
     except Exception as exc:
         print("agg_fmt_all failed:", repr(exc))
         return f"Error: {type(exc).__name__}: {exc}"
+
+
+@register_agg_method("GeoMean - 几何均值")
+def agg_geo_mean(series: pd.Series) -> float:
+    """Return geometric mean for positive values."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    s = s[s > 0]
+    if s.empty:
+        return np.nan
+    return np.exp(np.log(s).mean())
+
+
+@register_agg_method("GSD - 几何标准差")
+def agg_gsd(series: pd.Series) -> float:
+    """Return geometric standard deviation using log scale."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    s = s[s > 0]
+    if s.empty:
+        return np.nan
+    log_vals = np.log(s)
+    sd_log = log_vals.std(ddof=1)
+    return float(np.exp(sd_log))
+
+
+@register_agg_method("GCV% - 几何变异系数")
+def agg_gcv_percent(series: pd.Series) -> float:
+    """Return geometric coefficient of variation percentage."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    s = s[s > 0]
+    if s.empty:
+        return np.nan
+    log_vals = np.log(s)
+    sd_log = log_vals.std(ddof=1)
+    var_log = sd_log**2
+    return np.sqrt(np.exp(var_log) - 1.0) * 100.0
+
+
+@register_agg_method("Exp-Mean - 均值指数")
+def agg_exp_mean(series: pd.Series) -> float:
+    """Return exp of the mean value for a series."""
+    values = pd.to_numeric(series, errors="coerce")
+    if values.dropna().empty:
+        return np.nan
+    return float(np.exp(values.mean()))
+
+
+@register_agg_method("Exp-Median - 中位数指数")
+def agg_exp_median(series: pd.Series) -> float:
+    """Return exp of the median value for a series."""
+    median_val = agg_median_atomic(series)
+    if pd.isna(median_val):
+        return np.nan
+    return float(np.exp(median_val))
+
+
+@register_agg_method("Exp-Q1 - 25%分位指数")
+def agg_exp_q1(series: pd.Series) -> float:
+    """Return exp of the first quartile value for a series."""
+    q1_val = agg_q1_atomic(series)
+    if pd.isna(q1_val):
+        return np.nan
+    return float(np.exp(q1_val))
+
+
+@register_agg_method("Exp-Q3 - 75%分位指数")
+def agg_exp_q3(series: pd.Series) -> float:
+    """Return exp of the third quartile value for a series."""
+    q3_val = agg_q3_atomic(series)
+    if pd.isna(q3_val):
+        return np.nan
+    return float(np.exp(q3_val))
+
+
+@register_agg_method("Exp-Min - 最小值指数")
+def agg_exp_min(series: pd.Series) -> float:
+    """Return exp of the minimum numeric value for a series."""
+    min_val = agg_min_atomic(series)
+    if pd.isna(min_val):
+        return np.nan
+    return float(np.exp(min_val))
+
+
+@register_agg_method("Exp-Max - 最大值指数")
+def agg_exp_max(series: pd.Series) -> float:
+    """Return exp of the maximum numeric value for a series."""
+    max_val = agg_max_atomic(series)
+    if pd.isna(max_val):
+        return np.nan
+    return float(np.exp(max_val))
+
+
+@register_agg_method("Exp-SD - 标准差指数")
+def agg_exp_sd(series: pd.Series) -> float:
+    """Return exp of sample standard deviation using ddof=1."""
+    values = pd.to_numeric(series, errors="coerce")
+    if values.dropna().empty:
+        return np.nan
+    sd_val = values.std(ddof=1)
+    if pd.isna(sd_val):
+        return np.nan
+    return float(np.exp(sd_val))
+
+
+@register_agg_method("Exp-SE - 标准误指数")
+def agg_exp_se(series: pd.Series) -> float:
+    """Return exp of standard error of mean for a series."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return np.nan
+    se_val = s.std(ddof=1) / np.sqrt(len(s))
+    if pd.isna(se_val):
+        return np.nan
+    return float(np.exp(se_val))
+
+
+@register_agg_method("Exp-Variance - 方差指数")
+def agg_exp_variance(series: pd.Series) -> float:
+    """Return exp of sample variance using ddof=1."""
+    var_val = agg_variance_atomic(series)
+    if pd.isna(var_val):
+        return np.nan
+    return float(np.exp(var_val))
+
+
+@register_agg_method(" Exp-Mean (SD) - exp-均值(标准差)")
+def agg_fmt_exp_mean_sd(series: pd.Series) -> str:
+    """Return formatted exp-mean and exp-SD (e.g., 10.859(3.139))."""
+    mean_val = agg_exp_mean(series)
+    sd = agg_exp_sd(series)
+    if pd.isna(mean_val) or pd.isna(sd):
+        return "NaN"
+    return f"{mean_val:.3f}({sd:.3f})"
+
+
+@register_agg_method(" Exp-Mean (SE) - 均值指数(标准误指数)")
+def agg_fmt_exp_mean_se(series: pd.Series) -> str:
+    """Return formatted exp-mean and exp-SE (e.g., 10.859(0.458))."""
+    mean_val = agg_exp_mean(series)
+    se = agg_exp_se(series)
+    if pd.isna(mean_val) or pd.isna(se):
+        return "NaN"
+    return f"{mean_val:.3f}({se:.3f})"
+
+
+@register_agg_method(" Exp-Min, Max - 范围指数")
+def agg_fmt_exp_min_max(series: pd.Series) -> str:
+    """Return formatted exp-min/exp-max range (e.g., 3.536, 16.714)."""
+    min_val = agg_exp_min(series)
+    max_val = agg_exp_max(series)
+    if pd.isna(min_val) or pd.isna(max_val):
+        return "NaN"
+    return f"{min_val:.3f}, {max_val:.3f}"
+
+
+@register_agg_method("Exp-Median (Q1, Q3) - 中位数指数(四分位指数)")
+def agg_fmt_exp_median_q1q3(series: pd.Series) -> str:
+    """Return formatted exp-median with exp quartiles (e.g., 11.143(8.179, 12.857))."""
+    med = agg_exp_median(series)
+    q1 = agg_exp_q1(series)
+    q3 = agg_exp_q3(series)
+    if pd.isna(med) or pd.isna(q1) or pd.isna(q3):
+        return "NaN"
+    return f"{med:.3f}({q1:.3f}, {q3:.3f})"

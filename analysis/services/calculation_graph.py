@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections import deque
+import heapq
 from typing import Any, Iterable
 
 import pandas as pd
@@ -35,6 +35,16 @@ def _unique(values: Iterable[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _normalize_node_order(value: Any, default: int) -> int:
+    """Normalize node order values for stable sorting."""
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _escape_dot_label(value: str) -> str:
@@ -132,7 +142,7 @@ def _normalize_filter_op(op: Any) -> str:
 def _sql_like_to_regex(pattern: str) -> str:
     """Convert SQL LIKE pattern to regex."""
     escaped = re.escape(pattern)
-    regex = escaped.replace(r"\%", ".*").replace(r"\_", ".")
+    regex = escaped.replace("%", ".*").replace("_", ".")
     return f"^{regex}$"
 
 
@@ -220,6 +230,8 @@ def build_dependency_rows(graph: dict[str, Any]) -> list[dict[str, str]]:
     for node in nodes:
         node_id = str(node.get("id") or "")
         node_type = str(node.get("type") or "")
+        order_val = node.get("order")
+        order = "" if order_val is None else str(order_val)
         inputs = ", ".join(_unique([str(v) for v in _listify(node.get("inputs")) if v]))
         inputs_cols = ", ".join(
             _unique([str(v) for v in _listify(node.get("inputs_cols")) if v])
@@ -229,6 +241,7 @@ def build_dependency_rows(graph: dict[str, Any]) -> list[dict[str, str]]:
         )
         rows.append(
             {
+                "order": order,
                 "node": node_id,
                 "type": node_type,
                 "depends_on": inputs,
@@ -246,6 +259,18 @@ def _topo_sort(nodes: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
         for node in nodes
         if node.get("id") is not None
     }
+    index_map = {
+        node.get("id"): idx
+        for idx, node in enumerate(nodes)
+        if node.get("id") is not None
+    }
+    order_map = {
+        node_id: _normalize_node_order(
+            nodes_by_id[node_id].get("order"),
+            index_map.get(node_id, 0),
+        )
+        for node_id in nodes_by_id
+    }
     in_degree = {node_id: 0 for node_id in nodes_by_id}
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes_by_id}
 
@@ -258,21 +283,33 @@ def _topo_sort(nodes: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
             adjacency[dep].append(node_id)
             in_degree[node_id] += 1
 
-    queue = deque(
-        [
-            node.get("id")
-            for node in nodes
-            if node.get("id") in in_degree and in_degree[node.get("id")] == 0
-        ]
-    )
+    heap: list[tuple[int, int, Any]] = []
+    for node in nodes:
+        node_id = node.get("id")
+        if node_id in in_degree and in_degree[node_id] == 0:
+            heapq.heappush(
+                heap,
+                (
+                    order_map.get(node_id, 0),
+                    index_map.get(node_id, 0),
+                    node_id,
+                ),
+            )
     ordered: list[dict[str, Any]] = []
-    while queue:
-        node_id = queue.popleft()
+    while heap:
+        _, _, node_id = heapq.heappop(heap)
         ordered.append(nodes_by_id[node_id])
         for neighbor in adjacency.get(node_id, []):
             in_degree[neighbor] -= 1
             if in_degree[neighbor] == 0:
-                queue.append(neighbor)
+                heapq.heappush(
+                    heap,
+                    (
+                        order_map.get(neighbor, 0),
+                        index_map.get(neighbor, 0),
+                        neighbor,
+                    ),
+                )
 
     if len(ordered) != len(nodes_by_id):
         return None
@@ -293,7 +330,8 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
         null_mask = series.isna()
         if series.dtype == object:
             null_mask |= series.astype(str).str.strip().eq("")
-        return df[~null_mask] if op == "is_not_null" else df[null_mask]
+        match = null_mask if op == "is_null" else ~null_mask
+        return df[~match]
 
     if op in {"in", "not_in"}:
         cleaned_values = []
@@ -321,7 +359,8 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             series_str = series.astype(str)
             value_set = {str(v) for v in cleaned_values}
             mask = series_str.isin(value_set)
-        return df[mask] if op == "in" else df[~mask]
+        match = mask
+        return df[~match]
 
     if op in {"gt", "ge", "lt", "le"}:
         if not values:
@@ -331,13 +370,14 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             return df
         series_num = pd.to_numeric(series, errors="coerce")
         if op == "gt":
-            return df[series_num > target]
-        if op == "ge":
-            return df[series_num >= target]
-        if op == "lt":
-            return df[series_num < target]
-        if op == "le":
-            return df[series_num <= target]
+            match = series_num > target
+        elif op == "ge":
+            match = series_num >= target
+        elif op == "lt":
+            match = series_num < target
+        else:
+            match = series_num <= target
+        return df[~match]
 
     if op == "eq":
         if not values:
@@ -348,9 +388,11 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             if pd.isna(target_num):
                 return df
             series_num = pd.to_numeric(series, errors="coerce")
-            return df[series_num == target_num]
+            match = series_num == target_num
+            return df[~match]
         series_str = series.astype(str)
-        return df[series_str == str(target)]
+        match = series_str == str(target)
+        return df[~match]
 
     if op == "ne":
         if not values:
@@ -361,9 +403,11 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             if pd.isna(target_num):
                 return df
             series_num = pd.to_numeric(series, errors="coerce")
-            return df[series_num != target_num]
+            match = series_num != target_num
+            return df[~match]
         series_str = series.astype(str)
-        return df[series_str != str(target)]
+        match = series_str != str(target)
+        return df[~match]
 
     if op == "like":
         if not values:
@@ -373,14 +417,24 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             return df
         regex = _sql_like_to_regex(pattern)
         series_str = series.astype(str)
-        return df[series_str.str.contains(regex, regex=True, na=False)]
+        match = series_str.str.contains(regex, regex=True, na=False)
+        return df[~match]
 
     return df
 
 
 def _apply_aggregate(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     """Apply an aggregate node to the dataframe."""
-    group_by = [c for c in _listify(params.get("group_by")) if c in df.columns]
+    requested_group_by = _unique(
+        [c for c in _listify(params.get("group_by")) if c]
+    )
+    missing_group_by = [c for c in requested_group_by if c not in df.columns]
+    if missing_group_by:
+        st.warning(
+            "Aggregate group-by columns missing in current dataset: "
+            + ", ".join(missing_group_by)
+        )
+    group_by = [c for c in requested_group_by if c in df.columns]
     metrics = params.get("metrics", [])
     if not isinstance(metrics, list):
         return df

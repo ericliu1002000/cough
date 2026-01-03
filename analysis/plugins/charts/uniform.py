@@ -6,9 +6,29 @@ import streamlit as st
 from typing import Dict, List, Optional
 
 # 使用场景：统一坐标系的横向柱状图，用于跨单元格横向对比。
-# TODO 1. 所有图表最小值为X轴起点。即：所有柱状图的柱子统一朝向。
+
 # TODO 添加对数相关的统计插件。
-# TODO analysis_setups 支持根据值域进行检索：实现思路基本上是先查询出来 analysis_setups 里面都针对哪些值进行了分析，然后在展示profile的时候进行关联。
+
+# TODO 
+# 其实可以更进一步。 有没有发现， 这四个运算， 都可以被视为插件。 因为它人抽象出来就是， 接收一个dataframe的参数 ， 一个DAG的参数。 然后进行运算。 最后返回来一个新的 frame， 一个更新的DAG。
+
+# 对不对 ？
+# 对，你的抽象是成立的：
+# 这四块都可以视为“算子插件”，本质都是 (df, node/params, graph_ctx) → (df_new, node_meta)。
+
+# 更准确一点：
+
+# 执行层：每个算子只负责“接收当前 df + 节点参数 → 返回新的 df”。
+# DAG 层：节点的 inputs/outputs/order 由算子提供的元信息生成/更新（或由 UI 在添加规则时生成）。
+# 渲染层：UI 只关心算子的 schema（参数、输入列、输出列、默认值、显示名）。
+# 所以更完整的插件接口可以是：
+
+# inputs(node) / outputs(node) / validate(node, df)
+# apply(df, node)
+# describe(node)（用于 UI 或图）
+# 这样就把 “如何计算” 和 “如何建图/显示” 解耦了。
+
+# 如果你认可这个方向，我可以先整理一个最小的插件接口和 registry 的草案，再考虑怎么逐步迁移现有四块逻辑。
 
 # TODO 增加View 视图功能， 用来支持聚合功能的计算。
 def compute_uniform_axes(
