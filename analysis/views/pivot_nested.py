@@ -10,6 +10,7 @@ import streamlit as st
 
 from analysis.views.pivot_utils import (
     NestedPivotData,
+    add_p_values_to_pivot,
     build_nested_pivot_data,
     format_key_label,
 )
@@ -182,17 +183,39 @@ def _build_nested_html(data: NestedPivotData, agg_axis: str) -> str:
                 row_cells += (
                     f"<td class='pivot-agg-name'>{html.escape(agg_name)}</td>"
                 )
-                for col_def in col_defs:
-                    val = data.values.get(
-                        (
-                            row_tuple,
-                            col_def["col_tuple"],
-                            col_def["value_col"],
-                            agg_name,
+                if agg_name.startswith("P value (ANOVA"):
+                    span = max(len(col_groups), 1)
+                    for value_col in value_cols:
+                        val = None
+                        for group in col_groups:
+                            val = data.values.get(
+                                (
+                                    row_tuple,
+                                    group["col_tuple"],
+                                    value_col,
+                                    agg_name,
+                                )
+                            )
+                            if val is not None:
+                                break
+                        value_text = html.escape(_format_value(val))
+                        row_cells += (
+                            "<td class='pivot-cell' "
+                            f"colspan='{span}'>"
+                            f"{value_text}</td>"
                         )
-                    )
-                    value_text = html.escape(_format_value(val))
-                    row_cells += f"<td class='pivot-cell'>{value_text}</td>"
+                else:
+                    for col_def in col_defs:
+                        val = data.values.get(
+                            (
+                                row_tuple,
+                                col_def["col_tuple"],
+                                col_def["value_col"],
+                                agg_name,
+                            )
+                        )
+                        value_text = html.escape(_format_value(val))
+                        row_cells += f"<td class='pivot-cell'>{value_text}</td>"
                 row_class = (
                     "pivot-group-start" if agg_idx == 0 else "pivot-group-row"
                 )
@@ -249,6 +272,10 @@ def render_pivot_nested(
     row_orders: dict[str, list[str]] | None = None,
     col_orders: dict[str, list[str]] | None = None,
     agg_axis: str = "row",
+    include_p_values: bool = False,
+    p_value_label: str = "P value (ANOVA)",
+    control_groups: dict[str, str] | None = None,
+    control_label: str = "P value (vs Control)",
 ) -> NestedPivotData:
     """Render a nested pivot table in Streamlit and return its data model."""
     data = build_nested_pivot_data(
@@ -260,6 +287,14 @@ def render_pivot_nested(
         row_orders=row_orders,
         col_orders=col_orders,
     )
+    if include_p_values:
+        data = add_p_values_to_pivot(
+            data,
+            df,
+            label=p_value_label,
+            control_groups=control_groups,
+            control_label=control_label,
+        )
 
     if not data.row_keys or not data.col_keys:
         st.info("暂无可展示的数据。")

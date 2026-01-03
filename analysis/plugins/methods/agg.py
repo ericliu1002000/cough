@@ -270,6 +270,12 @@ def agg_exp_mean(series: pd.Series) -> float:
     return float(np.exp(values.mean()))
 
 
+@register_agg_method("exp")
+def agg_exp(series: pd.Series) -> float:
+    """Return exp of the mean value for a series."""
+    return agg_exp_mean(series)
+
+
 @register_agg_method("Exp-Median - 中位数指数")
 def agg_exp_median(series: pd.Series) -> float:
     """Return exp of the median value for a series."""

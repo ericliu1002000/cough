@@ -462,6 +462,7 @@ def build_calculation_payload(
             "agg_axis": agg_axis,
             "row_order": row_orders_map,
             "col_order": _normalize_dict_of_lists(state.get("pivot_col_order", {})),
+            "control_groups": state.get("pivot_control_groups"),
             "uniform_control_group": state.get("uniform_control_group"),
         },
     }
@@ -530,6 +531,11 @@ def apply_calculation_config(
     state.pop("pivot_agg_axis_ui", None)
 
     state["pivot_col_order"] = _normalize_dict_of_lists(p_cfg.get("col_order", {}))
+    control_groups_cfg = p_cfg.get("control_groups")
+    if isinstance(control_groups_cfg, dict):
+        state["pivot_control_groups"] = control_groups_cfg
+    else:
+        state.pop("pivot_control_groups", None)
 
     control_group_cfg = p_cfg.get("uniform_control_group")
     if isinstance(control_group_cfg, dict):

@@ -975,6 +975,14 @@ def main() -> None:
                 k: v for k, v in col_order_map.items() if k in col
             }
             st.session_state["pivot_col_order"] = col_order_map
+        control_groups = st.session_state.get("pivot_control_groups", {})
+        if not isinstance(control_groups, dict):
+            control_groups = {}
+        if col:
+            control_groups = {
+                k: v for k, v in control_groups.items() if k in col
+            }
+            st.session_state["pivot_control_groups"] = control_groups
 
         order_left, order_right = st.columns(2)
         with order_left:
@@ -1058,6 +1066,24 @@ def main() -> None:
                         if not col_order_values:
                             st.caption("暂无可排序的值。")
                             continue
+                        control_options = ["(不指定)"] + list(col_order_values)
+                        current_control = control_groups.get(col_field)
+                        control_index = (
+                            control_options.index(current_control)
+                            if current_control in control_options
+                            else 0
+                        )
+                        selected_control = st.selectbox(
+                            "对照组",
+                            control_options,
+                            index=control_index,
+                            key=f"pivot_control_group_{col_field}",
+                        )
+                        if selected_control == "(不指定)":
+                            control_groups.pop(col_field, None)
+                        else:
+                            control_groups[col_field] = selected_control
+                        st.session_state["pivot_control_groups"] = control_groups
                         col_key = col_field
                         selected_col_value = st.selectbox(
                             "选择要移动的值",
@@ -1123,6 +1149,12 @@ def main() -> None:
                     row_orders=row_orders_map,
                     col_orders=st.session_state.get("pivot_col_order", {}),
                     agg_axis=st.session_state.get("pivot_agg_axis", "row"),
+                    include_p_values=True,
+                    p_value_label="P value (ANOVA)",
+                    control_groups=st.session_state.get(
+                        "pivot_control_groups", {}
+                    ),
+                    control_label="P value (vs Control)",
                 )
                 st.download_button(
                     "📥 下载嵌套透视表（Excel）",

@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
+import numpy as np
 
 from analysis.plugins.methods import AGG_METHODS
+from analysis.plugins.methods.composite import (
+    calculate_anova_f_test,
+    calculate_t_test_from_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -182,4 +187,169 @@ def build_nested_pivot_data(
         value_cols=value_cols,
         agg_names=agg_names,
         values=values,
+    )
+
+
+def add_p_values_to_pivot(
+    data: NestedPivotData,
+    df: pd.DataFrame,
+    *,
+    label: str = "P value (ANOVA)",
+    control_groups: dict[str, str] | None = None,
+    control_label: str = "P value (vs Control)",
+) -> NestedPivotData:
+    """Return pivot data augmented with ANOVA and control-group P values."""
+    if not data.col_key_cols or not data.value_cols:
+        return data
+
+    work_df = df.copy()
+    key_cols = list(data.row_key_cols or []) + list(data.col_key_cols or [])
+    for key_col in key_cols:
+        if key_col in work_df.columns:
+            work_df[key_col] = work_df[key_col].astype(str)
+
+    anova_values: dict[tuple[tuple[str, ...], str, str], float | None] = {}
+    control_values: dict[
+        tuple[tuple[str, ...], str, str, str], float | None
+    ] = {}
+
+    control_groups = control_groups or {}
+    control_groups = {
+        str(k): str(v)
+        for k, v in control_groups.items()
+        if v is not None and str(v) != ""
+    }
+
+    if data.row_key_cols:
+        grouped = work_df.groupby(data.row_key_cols, dropna=False, sort=False)
+    else:
+        grouped = [((), work_df)]
+
+    for row_key, group in grouped:
+        if data.row_key_cols:
+            row_tuple = row_key if isinstance(row_key, tuple) else (row_key,)
+        else:
+            row_tuple = ()
+        for col_dim in data.col_key_cols:
+            if col_dim not in group.columns:
+                continue
+            for value_col in data.value_cols:
+                if value_col not in group.columns:
+                    continue
+                subset = group[[col_dim, value_col]].copy()
+                subset = subset.dropna(subset=[col_dim, value_col])
+                subset[col_dim] = subset[col_dim].astype(str)
+                subset[value_col] = pd.to_numeric(
+                    subset[value_col], errors="coerce"
+                )
+                _, p_val = calculate_anova_f_test(subset, col_dim, value_col)
+                anova_values[(row_tuple, value_col, col_dim)] = p_val
+
+                control_val = control_groups.get(col_dim)
+                if not control_val:
+                    continue
+                ctrl_series = subset.loc[
+                    subset[col_dim] == control_val, value_col
+                ].dropna()
+                if ctrl_series.empty:
+                    continue
+                ctrl_mean = float(ctrl_series.mean())
+                ctrl_sd = float(ctrl_series.std(ddof=1))
+                ctrl_n = int(ctrl_series.count())
+                if ctrl_n <= 1 or np.isnan(ctrl_sd):
+                    continue
+
+                for group_val in subset[col_dim].dropna().unique().tolist():
+                    group_val = str(group_val)
+                    if group_val == control_val:
+                        control_values[
+                            (row_tuple, value_col, col_dim, group_val)
+                        ] = np.nan
+                        continue
+                    grp_series = subset.loc[
+                        subset[col_dim] == group_val, value_col
+                    ].dropna()
+                    grp_mean = float(grp_series.mean()) if not grp_series.empty else np.nan
+                    grp_sd = float(grp_series.std(ddof=1)) if not grp_series.empty else np.nan
+                    grp_n = int(grp_series.count())
+                    if grp_n <= 1 or np.isnan(grp_sd):
+                        p_ctrl = np.nan
+                    else:
+                        _, p_ctrl = calculate_t_test_from_summary(
+                            mean_trt=grp_mean,
+                            mean_placebo=ctrl_mean,
+                            sd_trt=grp_sd,
+                            sd_placebo=ctrl_sd,
+                            n_trt=grp_n,
+                            n_placebo=ctrl_n,
+                        )
+                    control_values[
+                        (row_tuple, value_col, col_dim, group_val)
+                    ] = p_ctrl
+
+    if not anova_values and not control_values:
+        return data
+
+    col_dim_count = len(data.col_key_cols)
+    anova_label_map = {
+        col_dim: label
+        if col_dim_count == 1
+        else f"{label} ({col_dim})"
+        for col_dim in data.col_key_cols
+    }
+    control_label_map: dict[str, str] = {}
+    if control_groups:
+        for col_dim in data.col_key_cols:
+            control_val = control_groups.get(col_dim)
+            if not control_val:
+                continue
+            if col_dim_count == 1:
+                control_label_map[col_dim] = f"{control_label}: {control_val}"
+            else:
+                control_label_map[col_dim] = (
+                    f"{control_label} ({col_dim}: {control_val})"
+                )
+
+    extra_agg_names = [
+        name
+        for name in list(anova_label_map.values())
+        + list(control_label_map.values())
+        if name not in data.agg_names
+    ]
+    if not extra_agg_names:
+        return data
+
+    col_key_map = {
+        col_tuple: col_key
+        for col_key, col_tuple in zip(data.col_keys, data.col_key_tuples)
+    }
+    new_values = dict(data.values)
+    for row_tuple in data.row_key_tuples:
+        for col_tuple in data.col_key_tuples:
+            col_key = col_key_map.get(col_tuple, {})
+            for value_col in data.value_cols:
+                for col_dim, agg_name in anova_label_map.items():
+                    p_val = anova_values.get((row_tuple, value_col, col_dim))
+                    if p_val is None:
+                        p_val = np.nan
+                    new_values[(row_tuple, col_tuple, value_col, agg_name)] = p_val
+                for col_dim, agg_name in control_label_map.items():
+                    group_val = str(col_key.get(col_dim, ""))
+                    p_val = control_values.get(
+                        (row_tuple, value_col, col_dim, group_val)
+                    )
+                    if p_val is None:
+                        p_val = np.nan
+                    new_values[(row_tuple, col_tuple, value_col, agg_name)] = p_val
+
+    return NestedPivotData(
+        row_key_cols=data.row_key_cols,
+        col_key_cols=data.col_key_cols,
+        row_keys=data.row_keys,
+        col_keys=data.col_keys,
+        row_key_tuples=data.row_key_tuples,
+        col_key_tuples=data.col_key_tuples,
+        value_cols=data.value_cols,
+        agg_names=list(data.agg_names) + extra_agg_names,
+        values=new_values,
     )
