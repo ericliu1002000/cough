@@ -325,13 +325,17 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
 
     op = _normalize_filter_op(params.get("op"))
     series = df[field]
+    keep_ops = {"not_in", "ne", "is_not_null"}
+
+    def _apply_match(match: pd.Series) -> pd.DataFrame:
+        return df[match] if op in keep_ops else df[~match]
 
     if op in {"is_null", "is_not_null"}:
         null_mask = series.isna()
         if series.dtype == object:
             null_mask |= series.astype(str).str.strip().eq("")
         match = null_mask if op == "is_null" else ~null_mask
-        return df[~match]
+        return _apply_match(match)
 
     if op in {"in", "not_in"}:
         cleaned_values = []
@@ -359,8 +363,8 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             series_str = series.astype(str)
             value_set = {str(v) for v in cleaned_values}
             mask = series_str.isin(value_set)
-        match = mask
-        return df[~match]
+        match = ~mask if op == "not_in" else mask
+        return _apply_match(match)
 
     if op in {"gt", "ge", "lt", "le"}:
         if not values:
@@ -377,7 +381,7 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
             match = series_num < target
         else:
             match = series_num <= target
-        return df[~match]
+        return _apply_match(match)
 
     if op == "eq":
         if not values:
@@ -389,10 +393,10 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
                 return df
             series_num = pd.to_numeric(series, errors="coerce")
             match = series_num == target_num
-            return df[~match]
+            return _apply_match(match)
         series_str = series.astype(str)
         match = series_str == str(target)
-        return df[~match]
+        return _apply_match(match)
 
     if op == "ne":
         if not values:
@@ -404,10 +408,10 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
                 return df
             series_num = pd.to_numeric(series, errors="coerce")
             match = series_num != target_num
-            return df[~match]
+            return _apply_match(match)
         series_str = series.astype(str)
         match = series_str != str(target)
-        return df[~match]
+        return _apply_match(match)
 
     if op == "like":
         if not values:
@@ -418,7 +422,7 @@ def _apply_filter(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
         regex = _sql_like_to_regex(pattern)
         series_str = series.astype(str)
         match = series_str.str.contains(regex, regex=True, na=False)
-        return df[~match]
+        return _apply_match(match)
 
     return df
 

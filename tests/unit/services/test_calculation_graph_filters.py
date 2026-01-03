@@ -34,7 +34,7 @@ def test_filter_not_in_excludes_non_list_values() -> None:
         ("lt", 0.3, [0.3, 0.5]),
         ("le", 0.3, [0.5]),
         ("eq", 0.3, [0.1, 0.5]),
-        ("ne", 0.3, [0.3]),
+        ("ne", 0.3, [0.1, 0.5]),
     ],
 )
 def test_filter_numeric_ops_exclude_matches(
@@ -56,13 +56,13 @@ def test_filter_is_null_excludes_null_like() -> None:
     assert result["col"].tolist() == ["foo"]
 
 
-def test_filter_is_not_null_excludes_non_null() -> None:
-    """Non-null values are removed for is_not_null."""
+def test_filter_is_not_null_keeps_non_null() -> None:
+    """Non-null values are kept for is_not_null."""
     df = pd.DataFrame({"col": [None, "", "foo"]})
     result = _apply_filter(
         df, {"field": "col", "op": "is_not_null", "values": []}
     )
-    assert result["col"].tolist() == [None, ""]
+    assert result["col"].tolist() == ["foo"]
 
 
 def test_filter_like_excludes_matches() -> None:
