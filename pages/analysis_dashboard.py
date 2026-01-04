@@ -788,22 +788,51 @@ def main() -> None:
 
         all_final_cols = list(final_df.columns)
 
-        def normalize_pivot_selection(key: str) -> None:
-            """Normalize pivot selection session state to a valid column list."""
-            cur = st.session_state.get(key, [])
-            if isinstance(cur, str):
-                cur_list = [cur]
-            elif cur is None:
-                cur_list = []
-            elif isinstance(cur, (list, tuple, set)):
-                cur_list = list(cur)
-            else:
-                cur_list = [cur]
-            st.session_state[key] = [c for c in cur_list if c in all_final_cols]
+        def _listify_pivot_selection(value: Any) -> list[Any]:
+            if isinstance(value, str):
+                return [value]
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple, set)):
+                return list(value)
+            return [value]
 
-        normalize_pivot_selection("pivot_index")
-        normalize_pivot_selection("pivot_columns")
-        normalize_pivot_selection("pivot_values")
+        def _merge_pivot_options(
+            columns: list[str], selected: list[Any]
+        ) -> list[str]:
+            merged = list(columns)
+            for item in selected:
+                if item not in merged:
+                    merged.append(item)
+            return merged
+
+        removed_cols: set[str] = set()
+        if all_final_cols:
+            prev_cols = st.session_state.get("pivot_final_cols")
+            if isinstance(prev_cols, (list, tuple, set)) and prev_cols:
+                removed_cols = set(prev_cols) - set(all_final_cols)
+            st.session_state["pivot_final_cols"] = list(all_final_cols)
+
+        def load_pivot_selection(key: str) -> list[Any]:
+            saved_key = f"{key}_saved"
+            saved = st.session_state.get(saved_key)
+            if not saved:
+                saved = st.session_state.get(key, [])
+            saved_list = _listify_pivot_selection(saved)
+            if removed_cols:
+                saved_list = [c for c in saved_list if c not in removed_cols]
+            st.session_state[saved_key] = saved_list
+            if key not in st.session_state:
+                st.session_state[key] = saved_list
+            return saved_list
+
+        idx_selected = load_pivot_selection("pivot_index")
+        col_selected = load_pivot_selection("pivot_columns")
+        val_selected = load_pivot_selection("pivot_values")
+
+        idx_options = _merge_pivot_options(all_final_cols, idx_selected)
+        col_options = _merge_pivot_options(all_final_cols, col_selected)
+        val_options = _merge_pivot_options(all_final_cols, val_selected)
 
 
         def sync_pivot_row_order(
@@ -899,22 +928,43 @@ def main() -> None:
         st.markdown("<div id='pivot-dim-row-marker'></div>", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         with c1:
-            idx = st.multiselect("行维度 (如 Visit)", all_final_cols, key="pivot_index")
+            idx = st.multiselect(
+                "行维度 (如 Visit)",
+                idx_options,
+                default=idx_selected,
+                key="pivot_index",
+            )
         with c2:
-            col = st.multiselect("列维度 (如 Group)", all_final_cols, key="pivot_columns")
+            col = st.multiselect(
+                "列维度 (如 Group)",
+                col_options,
+                default=col_selected,
+                key="pivot_columns",
+            )
 
         st.markdown("<div id='pivot-metric-row-marker'></div>", unsafe_allow_html=True)
         c3, c4 = st.columns(2)
         with c3:
-            val = st.multiselect("值字段 (如 Score)", all_final_cols, key="pivot_values")
+            val = st.multiselect(
+                "值字段 (如 Score)",
+                val_options,
+                default=val_selected,
+                key="pivot_values",
+            )
         with c4:
             agg_options = list(AGG_METHODS.keys())
-            default_aggs = [
-                a for a in st.session_state.get("pivot_aggs", ["Mean - 平均值"])
-                if a in agg_options
-            ]
+            agg_saved = st.session_state.get(
+                "pivot_aggs_saved",
+                st.session_state.get("pivot_aggs", ["Mean - 平均值"]),
+            )
+            agg_saved_list = _listify_pivot_selection(agg_saved)
+            default_aggs = [a for a in agg_saved_list if a in agg_options]
             if not default_aggs:
-                default_aggs = ["Mean - 平均值"]
+                default_aggs = (
+                    ["Mean - 平均值"]
+                    if "Mean - 平均值" in agg_options
+                    else agg_options[:1]
+                )
             aggs = st.multiselect(
                 "统计量（可多选）",
                 agg_options,
@@ -938,12 +988,21 @@ def main() -> None:
                 )
             st.session_state["pivot_agg_axis"] = agg_axis_labels[selected_label]
 
+        st.session_state["pivot_index_saved"] = idx
+        st.session_state["pivot_columns_saved"] = col
+        st.session_state["pivot_values_saved"] = val
+        st.session_state["pivot_aggs_saved"] = aggs
+
+        idx_effective = [c for c in idx if c in all_final_cols]
+        col_effective = [c for c in col if c in all_final_cols]
+        val_effective = [c for c in val if c in all_final_cols]
+
         row_orders_map = st.session_state.get("pivot_row_orders", {})
         if not isinstance(row_orders_map, dict):
             row_orders_map = {}
-        if idx:
+        if idx_effective:
             row_orders_map = {
-                k: v for k, v in row_orders_map.items() if k in idx
+                k: v for k, v in row_orders_map.items() if k in idx_effective
             }
             st.session_state["pivot_row_orders"] = row_orders_map
         else:
@@ -951,8 +1010,8 @@ def main() -> None:
             st.session_state["pivot_row_orders"] = row_orders_map
 
         row_order_values_map: dict[str, list[str]] = {}
-        if idx:
-            for field in idx:
+        if idx_effective:
+            for field in idx_effective:
                 if field in final_df.columns:
                     available_values = (
                         final_df[field]
@@ -970,26 +1029,26 @@ def main() -> None:
         col_order_map = st.session_state.get("pivot_col_order", {})
         if not isinstance(col_order_map, dict):
             col_order_map = {}
-        if col:
+        if col_effective:
             col_order_map = {
-                k: v for k, v in col_order_map.items() if k in col
+                k: v for k, v in col_order_map.items() if k in col_effective
             }
             st.session_state["pivot_col_order"] = col_order_map
         control_groups = st.session_state.get("pivot_control_groups", {})
         if not isinstance(control_groups, dict):
             control_groups = {}
-        if col:
+        if col_effective:
             control_groups = {
-                k: v for k, v in control_groups.items() if k in col
+                k: v for k, v in control_groups.items() if k in col_effective
             }
             st.session_state["pivot_control_groups"] = control_groups
 
         order_left, order_right = st.columns(2)
         with order_left:
-            if not idx:
+            if not idx_effective:
                 st.caption("请选择行维度以排序。")
             else:
-                for field in idx:
+                for field in idx_effective:
                     with st.expander(
                         f"行维度顺序（{field}）", expanded=False
                     ):
@@ -1044,11 +1103,11 @@ def main() -> None:
                         st.caption("当前顺序：" + " → ".join(values))
 
         with order_right:
-            if not col:
+            if not col_effective:
                 st.caption("请选择列维度以排序。")
             else:
                 with st.expander("列维度顺序", expanded=False):
-                    for col_idx, col_field in enumerate(col):
+                    for col_idx, col_field in enumerate(col_effective):
                         if col_field in final_df.columns:
                             col_values = (
                                 final_df[col_field]
@@ -1137,14 +1196,14 @@ def main() -> None:
                             "当前顺序：" + " → ".join(col_order_values)
                         )
 
-        if idx and col and val and aggs:
+        if idx_effective and col_effective and val_effective and aggs:
             # 1. 透视表
             try:
                 nested_data = render_pivot_nested(
                     final_df,
-                    index_cols=idx,
-                    column_cols=col,
-                    value_cols=val,
+                    index_cols=idx_effective,
+                    column_cols=col_effective,
+                    value_cols=val_effective,
                     agg_names=aggs,
                     row_orders=row_orders_map,
                     col_orders=st.session_state.get("pivot_col_order", {}),
@@ -1164,14 +1223,14 @@ def main() -> None:
                     ),
                     "pivot_table_nested.xlsx",
                 )
-                if len(val) != 1:
+                if len(val_effective) != 1:
                     st.info("折线图仅支持单一值字段。")
-                elif not col:
+                elif not col_effective:
                     st.info("折线图需要至少一个列维度。")
                 else:
                     st.markdown("#### 📈 折线图")
-                    value_col = val[0]
-                    row_cols = idx
+                    value_col = val_effective[0]
+                    row_cols = idx_effective
                     col_orders = st.session_state.get(
                         "pivot_col_order", {}
                     )
@@ -1224,13 +1283,13 @@ def main() -> None:
                     
 
                     items_by_col: dict[str, dict[str, dict[str, Any]]] = {
-                        col_field: {} for col_field in col
+                        col_field: {} for col_field in col_effective
                     }
                     export_by_col: dict[str, dict[str, dict[str, Any]]] = {
-                        col_field: {} for col_field in col
+                        col_field: {} for col_field in col_effective
                     }
                     for agg_name in line_aggs:
-                        for col_field in col:
+                        for col_field in col_effective:
                             is_mean = agg_name == "Mean - 平均值"
                             resolved_error = None
                             if is_mean and error_mode and error_mode != "无":
@@ -1272,7 +1331,7 @@ def main() -> None:
                     trimmed_func = lambda s, keep_ratio=keep_ratio: (
                         compute_trimmed_mean(s, keep_ratio)
                     )
-                    for col_field in col:
+                    for col_field in col_effective:
                         fig = build_pivot_line_fig(
                             df=final_df,
                             value_col=value_col,
@@ -1308,7 +1367,7 @@ def main() -> None:
                     ]
                     ordered_items = []
                     ordered_export_items = []
-                    for col_field in col:
+                    for col_field in col_effective:
                         for key in ordered_keys:
                             item = items_by_col.get(col_field, {}).get(key)
                             if item:
@@ -1364,21 +1423,30 @@ def main() -> None:
 
             # 2. [自动化] 组间差异检验 (ANOVA)
             # 自动使用透视表的配置：Index=分层, Col=分组, Val=数值
-            if len(idx) == 1 and len(col) == 1 and len(val) == 1:
+            if (
+                len(idx_effective) == 1
+                and len(col_effective) == 1
+                and len(val_effective) == 1
+            ):
                 st.markdown("#### 📉 组间差异检验 (One-Way ANOVA)")
-                st.caption(f"自动计算：按 **{idx[0]}** 分层，比较不同 **{col[0]}** 组别之间的 **{val[0]}** 差异。")
+                st.caption(
+                    "自动计算：按 "
+                    f"**{idx_effective[0]}** 分层，比较不同 "
+                    f"**{col_effective[0]}** 组别之间的 "
+                    f"**{val_effective[0]}** 差异。"
+                )
                 
                 anova_df = calculate_anova_table(
                     final_df, 
-                    index_col=idx[0], 
-                    group_col=col[0], 
-                    value_col=val[0]
+                    index_col=idx_effective[0], 
+                    group_col=col_effective[0], 
+                    value_col=val_effective[0]
                 )
                 st.dataframe(anova_df, width="stretch")
 
             # 3. 绘图（支持多行维度 / 多列维度，按迪卡尔积生成单元格）
-            if val:
-                if len(val) > 1:
+            if val_effective:
+                if len(val_effective) > 1:
                     st.info("当前图表仅支持单一值字段绘图，请在“值字段”中只选择一个。")
                 else:
                     st.markdown("---")
@@ -1391,8 +1459,8 @@ def main() -> None:
                     all_figs: list[dict[str, Any]] = []
 
                     # 计算行维度和列维度的所有组合键（多维）
-                    row_key_cols = idx
-                    col_key_cols = col
+                    row_key_cols = idx_effective
+                    col_key_cols = col_effective
 
                     row_orders_for_chart = (
                         row_orders_map if isinstance(row_orders_map, dict) else {}
@@ -1457,7 +1525,7 @@ def main() -> None:
                         subj_col = st.selectbox(
                             "ID 列 (用于绘图)", all_final_cols, index=def_id_idx
                         )
-                        value_col = val[0]
+                        value_col = val_effective[0]
                         chart_type = st.radio(
                             "图表类型",
                             ["统一坐标", "差值统一坐标", "对数坐标", "箱线图"],
