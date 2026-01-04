@@ -62,6 +62,9 @@ def render_sidebar_navigation(active_page: str | None = None) -> None:
         ("analysis_dashboard", "Analysis Dashboard", "analysis_dashboard"),
         ("subject_profile", "Profile Book", "subject_profile"),
         ("project_docs", "Docs", "project_docs"),
+        ("db_upload", "Raw Data Upload", "db_upload"),
+        ("db_metadata", "Metadata Config", "db_metadata"),
+        ("db_metadata_column", "Column Config", "db_metadata_column"),
     ]
     st.markdown("**Navigation**")
     query_params = append_auth_token({})
