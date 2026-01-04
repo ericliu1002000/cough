@@ -16,6 +16,7 @@ all_code.txt
 collect_code.py
 venv/
 ENV/
+.streamlit/
 docs/
 data/
 static/docs/

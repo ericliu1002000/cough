@@ -109,6 +109,119 @@ def _format_row_hover(
     )
 
 
+def _compute_agg_range(
+    df: pd.DataFrame,
+    value_col: str,
+    row_key_cols: List[str],
+    col_field: str,
+    agg_func: Callable[[pd.Series], float] | str,
+    error_mode: Optional[str] = None,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return min/max values for a single aggregation (with optional error)."""
+    if df.empty or value_col not in df.columns or col_field not in df.columns:
+        return None, None
+
+    work_df = df.copy()
+    key_cols = list(row_key_cols) + [col_field]
+    if key_cols:
+        work_df = work_df.dropna(subset=key_cols)
+        for key_col in key_cols:
+            work_df[key_col] = work_df[key_col].astype(str)
+
+    work_df[value_col] = pd.to_numeric(work_df[value_col], errors="coerce")
+    work_df = work_df.dropna(subset=[value_col])
+    if work_df.empty:
+        return None, None
+
+    if error_mode:
+        error_mode = str(error_mode).upper()
+        if error_mode not in {"SD", "SE"}:
+            error_mode = None
+
+    group_cols = list(row_key_cols) + [col_field]
+    grouped = work_df.groupby(group_cols, dropna=False, sort=False)
+    y_min = None
+    y_max = None
+    for _, group in grouped:
+        series = group[value_col]
+        try:
+            if callable(agg_func):
+                agg_val = agg_func(series)
+            else:
+                agg_val = series.agg(agg_func)
+        except Exception:
+            agg_val = None
+        y_val = _coerce_number(agg_val)
+        if y_val is None:
+            continue
+        low = y_val
+        high = y_val
+        if error_mode:
+            n_val = int(series.count())
+            sd_val = series.std(ddof=1)
+            err_val = None
+            if n_val > 1 and pd.notna(sd_val):
+                if error_mode == "SE":
+                    err_val = sd_val / math.sqrt(n_val)
+                elif error_mode == "SD":
+                    err_val = sd_val
+            err_val = _coerce_number(err_val)
+            if err_val is not None:
+                err_val = abs(err_val)
+                low = y_val - err_val
+                high = y_val + err_val
+        if y_min is None or low < y_min:
+            y_min = low
+        if y_max is None or high > y_max:
+            y_max = high
+    return y_min, y_max
+
+
+def compute_line_y_range(
+    df: pd.DataFrame,
+    value_col: str,
+    row_key_cols: List[str],
+    col_field: str,
+    agg_names: List[str],
+    error_mode: Optional[str] = None,
+    error_agg_name: str = "Mean - 平均值",
+    pad_ratio: float = 0.0,
+) -> Optional[Tuple[float, float]]:
+    """Return a padded y-range for multiple aggregations."""
+    y_min = None
+    y_max = None
+    for agg_name in agg_names:
+        agg_func = AGG_METHODS.get(agg_name, "mean")
+        use_error = error_mode if agg_name == error_agg_name else None
+        agg_min, agg_max = _compute_agg_range(
+            df,
+            value_col,
+            row_key_cols,
+            col_field,
+            agg_func,
+            error_mode=use_error,
+        )
+        if agg_min is None or agg_max is None:
+            continue
+        if y_min is None or agg_min < y_min:
+            y_min = agg_min
+        if y_max is None or agg_max > y_max:
+            y_max = agg_max
+    if y_min is None or y_max is None:
+        return None
+
+    span = y_max - y_min
+    pad = span * pad_ratio
+    if span == 0:
+        pad = abs(y_min) * pad_ratio
+        if pad == 0:
+            pad = 1.0
+    if pad:
+        y_min -= pad
+        y_max += pad
+    return y_min, y_max
+
+
 def build_pivot_line_fig(
     df: pd.DataFrame,
     value_col: str,
@@ -121,6 +234,7 @@ def build_pivot_line_fig(
     show_counts: bool = False,
     agg_func: Optional[Callable[[pd.Series], float]] = None,
     y_range_pad_ratio: float = 0.0,
+    y_range: Optional[Tuple[float, float]] = None,
 ) -> Optional["go.Figure"]:
     """Build a line chart figure from pivoted data."""
     if df.empty or value_col not in df.columns or col_field not in df.columns:
@@ -319,7 +433,9 @@ def build_pivot_line_fig(
         showgrid=True,
         gridcolor="#e6e6e6",
     )
-    if y_min is not None and y_max is not None:
+    if y_range is not None:
+        yaxis_kwargs["range"] = [y_range[0], y_range[1]]
+    elif y_min is not None and y_max is not None:
         pad = 0.0
         if y_min == y_max:
             pad = abs(y_min) * y_range_pad_ratio

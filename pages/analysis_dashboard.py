@@ -16,7 +16,11 @@ from analysis.plugins.charts.boxplot import (
     compute_boxplot_range,
     render_boxplot_fig,
 )
-from analysis.plugins.charts.lineplot import build_pivot_line_fig, render_line_fig
+from analysis.plugins.charts.lineplot import (
+    build_pivot_line_fig,
+    compute_line_y_range,
+    render_line_fig,
+)
 from analysis.plugins.charts.uniform import (
     build_uniform_spaghetti_fig,
     compute_uniform_axes,
@@ -1223,19 +1227,15 @@ def main() -> None:
                     ),
                     "pivot_table_nested.xlsx",
                 )
-                if len(val_effective) != 1:
-                    st.info("折线图仅支持单一值字段。")
-                elif not col_effective:
+                if not col_effective:
                     st.info("折线图需要至少一个列维度。")
                 else:
                     st.markdown("#### 📈 折线图")
-                    value_col = val_effective[0]
                     row_cols = idx_effective
                     col_orders = st.session_state.get(
                         "pivot_col_order", {}
                     )
                     row_orders = row_orders_map
-                    mean_y_ranges: dict[str, list[float]] = {}
                     line_aggs = [
                         "Mean - 平均值",
                         "Median - 中位数",
@@ -1279,87 +1279,108 @@ def main() -> None:
                             step=1,
                             key="line_trim_keep_percent",
                         )
-                    trim_pct = max(0.0, (100 - float(keep_percent)) / 2.0)
-                    
 
-                    items_by_col: dict[str, dict[str, dict[str, Any]]] = {
-                        col_field: {} for col_field in col_effective
-                    }
-                    export_by_col: dict[str, dict[str, dict[str, Any]]] = {
-                        col_field: {} for col_field in col_effective
-                    }
-                    for agg_name in line_aggs:
+                    keep_ratio = max(float(keep_percent) / 100.0, 0.0)
+                    trimmed_agg_name = f"trimmed mean ({keep_percent}%)"
+                    trimmed_func = lambda s, keep_ratio=keep_ratio: (
+                        compute_trimmed_mean(s, keep_ratio)
+                    )
+                    error_mode_resolved = (
+                        error_mode if error_mode and error_mode != "无" else None
+                    )
+
+                    facet_ranges: dict[tuple[str, str], list[float] | None] = {}
+                    for value_col in val_effective:
                         for col_field in col_effective:
-                            is_mean = agg_name == "Mean - 平均值"
-                            resolved_error = None
-                            if is_mean and error_mode and error_mode != "无":
-                                resolved_error = error_mode
+                            y_range = compute_line_y_range(
+                                df=final_df,
+                                value_col=value_col,
+                                row_key_cols=row_cols,
+                                col_field=col_field,
+                                agg_names=line_aggs,
+                                error_mode=error_mode_resolved,
+                                error_agg_name="Mean - 平均值",
+                                pad_ratio=0.2,
+                            )
+                            facet_ranges[(value_col, col_field)] = (
+                                list(y_range) if y_range else None
+                            )
+
+                    items_by_facet: dict[
+                        tuple[str, str], dict[str, dict[str, Any]]
+                    ] = {}
+                    export_by_facet: dict[
+                        tuple[str, str], dict[str, dict[str, Any]]
+                    ] = {}
+                    for value_col in val_effective:
+                        for col_field in col_effective:
+                            facet_key = (value_col, col_field)
+                            items_by_facet[facet_key] = {}
+                            export_by_facet[facet_key] = {}
+                            facet_range = facet_ranges.get(facet_key)
+                            for agg_name in line_aggs:
+                                is_mean = agg_name == "Mean - 平均值"
+                                resolved_error = (
+                                    error_mode_resolved if is_mean else None
+                                )
+                                fig = build_pivot_line_fig(
+                                    df=final_df,
+                                    value_col=value_col,
+                                    row_key_cols=row_cols,
+                                    col_field=col_field,
+                                    agg_name=agg_name,
+                                    row_orders=row_orders,
+                                    col_orders=col_orders,
+                                    error_mode=resolved_error,
+                                    show_counts=is_mean,
+                                    y_range=facet_range,
+                                )
+                                if fig is None:
+                                    continue
+                                title = (
+                                    f"{value_col} | {col_field} | {agg_name}"
+                                )
+                                items_by_facet[facet_key][agg_name] = {
+                                    "title": title,
+                                    "fig": fig,
+                                }
+                                export_by_facet[facet_key][agg_name] = {
+                                    "title": title,
+                                    "title_html": html.escape(title),
+                                    "fig": copy.deepcopy(fig),
+                                    "legend_items": [],
+                                    "chart_type": "line",
+                                }
+
                             fig = build_pivot_line_fig(
                                 df=final_df,
                                 value_col=value_col,
                                 row_key_cols=row_cols,
                                 col_field=col_field,
-                                agg_name=agg_name,
+                                agg_name=trimmed_agg_name,
                                 row_orders=row_orders,
                                 col_orders=col_orders,
-                                error_mode=resolved_error,
-                                show_counts=is_mean,
-                                y_range_pad_ratio=0.1,
+                                agg_func=trimmed_func,
+                                y_range=facet_range,
                             )
                             if fig is None:
                                 continue
-                            if is_mean:
-                                mean_range = fig.layout.yaxis.range
-                                if mean_range:
-                                    mean_y_ranges[col_field] = list(
-                                        mean_range
-                                    )
-                            title = f"{col_field} | {agg_name}"
-                            items_by_col[col_field][agg_name] = {
+                            title = (
+                                f"{value_col} | {col_field} | "
+                                f"trimmed mean ({keep_percent}%)"
+                            )
+                            items_by_facet[facet_key]["__trimmed__"] = {
                                 "title": title,
                                 "fig": fig,
                             }
-                            export_by_col[col_field][agg_name] = {
+                            export_by_facet[facet_key]["__trimmed__"] = {
                                 "title": title,
                                 "title_html": html.escape(title),
                                 "fig": copy.deepcopy(fig),
                                 "legend_items": [],
                                 "chart_type": "line",
                             }
-                    keep_ratio = max(float(keep_percent) / 100.0, 0.0)
-                    trimmed_agg_name = f"trimmed mean ({keep_percent}%)"
-                    trimmed_func = lambda s, keep_ratio=keep_ratio: (
-                        compute_trimmed_mean(s, keep_ratio)
-                    )
-                    for col_field in col_effective:
-                        fig = build_pivot_line_fig(
-                            df=final_df,
-                            value_col=value_col,
-                            row_key_cols=row_cols,
-                            col_field=col_field,
-                            agg_name=trimmed_agg_name,
-                            row_orders=row_orders,
-                            col_orders=col_orders,
-                            agg_func=trimmed_func,
-                            y_range_pad_ratio=0.1,
-                        )
-                        if fig is None:
-                            continue
-                        mean_range = mean_y_ranges.get(col_field)
-                        if mean_range:
-                            fig.update_yaxes(range=list(mean_range))
-                        title = f"{col_field} | trimmed mean ({keep_percent}%)"
-                        items_by_col[col_field]["__trimmed__"] = {
-                            "title": title,
-                            "fig": fig,
-                        }
-                        export_by_col[col_field]["__trimmed__"] = {
-                            "title": title,
-                            "title_html": html.escape(title),
-                            "fig": copy.deepcopy(fig),
-                            "legend_items": [],
-                            "chart_type": "line",
-                        }
+
                     ordered_keys = [
                         "Mean - 平均值",
                         "__trimmed__",
@@ -1367,16 +1388,20 @@ def main() -> None:
                     ]
                     ordered_items = []
                     ordered_export_items = []
-                    for col_field in col_effective:
-                        for key in ordered_keys:
-                            item = items_by_col.get(col_field, {}).get(key)
-                            if item:
-                                ordered_items.append(item)
-                            export_item = export_by_col.get(
-                                col_field, {}
-                            ).get(key)
-                            if export_item:
-                                ordered_export_items.append(export_item)
+                    for value_col in val_effective:
+                        for col_field in col_effective:
+                            facet_key = (value_col, col_field)
+                            for key in ordered_keys:
+                                item = items_by_facet.get(
+                                    facet_key, {}
+                                ).get(key)
+                                if item:
+                                    ordered_items.append(item)
+                                export_item = export_by_facet.get(
+                                    facet_key, {}
+                                ).get(key)
+                                if export_item:
+                                    ordered_export_items.append(export_item)
                     if not ordered_items:
                         st.info("暂无可绘制的折线图数据。")
                     else:
